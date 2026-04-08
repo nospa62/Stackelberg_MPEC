@@ -117,7 +117,7 @@ var mu_qn_lb {GENERATORS} >= 0;    # multiplier for q- >= 0
 # SECTION 9: OBJECTIVE FUNCTION (MARKET OPERATOR)
 # ══════════════════════════════════════════════════════
 minimize TotalPayment:
-    sum {i in GENERATORS} (lam_inj[i] * (qp[i] * s_base_mva) + lam_abs[i] * (qn[i] * s_base_mva))
+    sum {i in GENERATORS} (lam_inj[i] * qp[i] + lam_abs[i] * qn[i])
     + 1e-6 * sum {i in GENERATORS} (lam_inj[i] + lam_abs[i]);
 
 # Economic interpretation:
@@ -248,7 +248,7 @@ subject to KKT_compl_qn_lb {i in GENERATORS}:
 # ══════════════════════════════════════════════════════
 # Prevents simultaneous injection/absorption trapping dynamically
 subject to physical_exclusivity {i in GENERATORS}:
-    qp[i] * qn[i] <= eps_smooth;
+    qp[i] * qn[i] <= 0.0001;
 
 # ══════════════════════════════════════════════════════
 # SECTION 15: AUXILIARY EXPRESSIONS (for output and validation)
