@@ -221,25 +221,25 @@ subject to KKT_stationarity_abs {i in GENERATORS}:
 
 # Injection upper bound: mu_qp_ub * (q_inj_max - qp) = 0
 subject to KKT_compl_qp_ub {i in GENERATORS}:
-    (1 + delta_reg) * mu_qp_ub[i] + (1 + delta_reg) * (q_inj_max[i] - qp[i])
+    mu_qp_ub[i] + (q_inj_max[i] - qp[i])
     - sqrt( mu_qp_ub[i]^2 + (q_inj_max[i] - qp[i])^2 + eps_smooth^2 )
     = 0;
 
 # Injection lower bound: mu_qp_lb * qp = 0
 subject to KKT_compl_qp_lb {i in GENERATORS}:
-    (1 + delta_reg) * mu_qp_lb[i] + (1 + delta_reg) * qp[i]
+    mu_qp_lb[i] + qp[i]
     - sqrt( mu_qp_lb[i]^2 + qp[i]^2 + eps_smooth^2 )
     = 0;
 
 # Absorption upper bound: mu_qn_ub * (q_abs_max - qn) = 0
 subject to KKT_compl_qn_ub {i in GENERATORS}:
-    (1 + delta_reg) * mu_qn_ub[i] + (1 + delta_reg) * (q_abs_max[i] - qn[i])
+    mu_qn_ub[i] + (q_abs_max[i] - qn[i])
     - sqrt( mu_qn_ub[i]^2 + (q_abs_max[i] - qn[i])^2 + eps_smooth^2 )
     = 0;
 
 # Absorption lower bound: mu_qn_lb * qn = 0
 subject to KKT_compl_qn_lb {i in GENERATORS}:
-    (1 + delta_reg) * mu_qn_lb[i] + (1 + delta_reg) * qn[i]
+    mu_qn_lb[i] + qn[i]
     - sqrt( mu_qn_lb[i]^2 + qn[i]^2 + eps_smooth^2 )
     = 0;
 
@@ -247,8 +247,6 @@ subject to KKT_compl_qn_lb {i in GENERATORS}:
 # SECTION 14: RELAXED PHYSICAL EXCLUSIVITY
 # ══════════════════════════════════════════════════════
 # Prevents simultaneous injection/absorption trapping dynamically
-subject to physical_exclusivity {i in GENERATORS}:
-    qp[i] * qn[i] <= 0.0001;
 
 # ══════════════════════════════════════════════════════
 # SECTION 15: AUXILIARY EXPRESSIONS (for output and validation)
