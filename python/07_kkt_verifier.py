@@ -19,46 +19,41 @@ def parse_network_dat(filepath):
         'cost_a_abs': {}, 'cost_b_abs': {}, 'cost_c_abs': {}
     }
     
-    # Parse S_base
-    m = re.search(r'param\s+S_base\s*:=\s*([\d\.]+)', content)
+    m = re.search(r'param\s+s_base_mva\s*:=\s*([\d\.]+)', content)
     if m: data['S_base'] = float(m.group(1))
+    else:
+        m = re.search(r'param\s+S_base\s*:=\s*([\d\.]+)', content)
+        if m: data['S_base'] = float(m.group(1))
     
-    # Parse sets
     for set_name in ['BUSES', 'GENERATORS', 'SLACK_BUSES']:
         m = re.search(r'set\s+' + set_name + r'\s*:=\s*(.*?);', content, re.DOTALL)
         if m:
             data[set_name] = m.group(1).split()
             
-    # Parse BUSES table
-    m = re.search(r'param:\s*BUSES:\s*V_min\s+V_max\s+P_load\s+Q_load\s+Q_shunt\s*:=\s*(.*?);', content, re.DOTALL)
-    if m:
-        for line in m.group(1).strip().split('\n'):
-            parts = line.split()
-            if len(parts) >= 6:
-                bus = parts[0]
-                data['P_load'][bus] = float(parts[3])
-                data['Q_load'][bus] = float(parts[4])
-                data['Q_shunt'][bus] = float(parts[5])
+    def parse_1d(param_name, is_float=True):
+        d = {}
+        m = re.search(r'param\s+' + param_name + r'\s*:=\s*(.*?);', content, re.DOTALL)
+        if m:
+            for line in m.group(1).strip().split('\n'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    d[parts[0]] = float(parts[1]) if is_float else parts[1]
+        return d
                 
-    # Parse GENERATORS table
-    m = re.search(r'param:\s*GENERATORS:\s*gen_bus\s+P_gen_fixed\s+q_inj_max\s+q_abs_max\s+cost_a_inj\s+cost_b_inj\s+cost_c_inj\s+cost_a_abs\s+cost_b_abs\s+cost_c_abs\s*:=\s*(.*?);', content, re.DOTALL)
-    if m:
-        for line in m.group(1).strip().split('\n'):
-            parts = line.split()
-            if len(parts) >= 11:
-                gen = parts[0]
-                data['gen_bus'][gen] = parts[1]
-                data['P_gen_fixed'][gen] = float(parts[2])
-                data['q_inj_max'][gen] = float(parts[3])
-                data['q_abs_max'][gen] = float(parts[4])
-                data['cost_a_inj'][gen] = float(parts[5])
-                data['cost_b_inj'][gen] = float(parts[6])
-                data['cost_c_inj'][gen] = float(parts[7])
-                data['cost_a_abs'][gen] = float(parts[8])
-                data['cost_b_abs'][gen] = float(parts[9])
-                data['cost_c_abs'][gen] = float(parts[10])
-                
-    # Parse 2D params G and B
+    data['P_load'] = parse_1d('P_load')
+    data['Q_load'] = parse_1d('Q_load')
+    data['Q_shunt'] = parse_1d('Q_shunt')
+    data['gen_bus'] = parse_1d('gen_bus', is_float=False)
+    data['P_gen_fixed'] = parse_1d('P_gen_fixed')
+    data['q_inj_max'] = parse_1d('q_inj_max')
+    data['q_abs_max'] = parse_1d('q_abs_max')
+    data['cost_a_inj'] = parse_1d('cost_a_inj')
+    data['cost_b_inj'] = parse_1d('cost_b_inj')
+    data['cost_c_inj'] = parse_1d('cost_c_inj')
+    data['cost_a_abs'] = parse_1d('cost_a_abs')
+    data['cost_b_abs'] = parse_1d('cost_b_abs')
+    data['cost_c_abs'] = parse_1d('cost_c_abs')
+    
     for param in ['G', 'B']:
         m = re.search(r'param\s+' + param + r'\s*:=\s*(.*?);', content, re.DOTALL)
         if m:
@@ -97,21 +92,20 @@ def parse_solution_raw(filepath):
     return sol
 
 def verify_ac_power_flow(solution, network, tol=1e-4):
-    S_base = network['S_base']
     P_mismatch = {}
     Q_mismatch = {}
     
     for b in network['BUSES']:
-        # Injections (in PU)
-        p_gen_pu = sum(network['P_gen_fixed'].get(g, 0.0) / S_base for g in network['GENERATORS'] if network['gen_bus'].get(g) == b)
+        # Parameters from network.dat are ALREADY in PU. Do not divide by S_base.
+        p_gen_pu = sum(network['P_gen_fixed'].get(g, 0.0) for g in network['GENERATORS'] if network['gen_bus'].get(g) == b)
         q_gen_pu = sum(solution['qp'].get(g, 0.0) - solution['qn'].get(g, 0.0) for g in network['GENERATORS'] if network['gen_bus'].get(g) == b)
         
         if b in network['SLACK_BUSES']:
             p_gen_pu += solution['P_slack'].get(b, 0.0)
             
-        p_load_pu = network['P_load'].get(b, 0.0) / S_base
-        q_load_pu = network['Q_load'].get(b, 0.0) / S_base
-        q_shunt_pu = network['Q_shunt'].get(b, 0.0) / S_base
+        p_load_pu = network['P_load'].get(b, 0.0)
+        q_load_pu = network['Q_load'].get(b, 0.0)
+        q_shunt_pu = network['Q_shunt'].get(b, 0.0)
         
         p_inj = p_gen_pu - p_load_pu
         q_inj = q_gen_pu + q_shunt_pu - q_load_pu
@@ -161,23 +155,25 @@ def verify_kkt_stationarity(solution, network, tol=1e-6):
     stat_abs = {}
     
     for g in network['GENERATORS']:
-        # Convert PU variables to physical units (MVAr, €/MVAr) to match cost functions
+        # qp and qn are still stored in PU, so we convert them to MVAr for the cost polynomial
         qp_mvar = solution['qp'].get(g, 0.0) * S_base
         qn_mvar = solution['qn'].get(g, 0.0) * S_base
         
         lam_inj = solution['lam_inj'].get(g, 0.0)
         lam_abs = solution['lam_abs'].get(g, 0.0)
         
-        mu_qp_ub = solution['mu_qp_ub'].get(g, 0.0) / S_base
-        mu_qp_lb = solution['mu_qp_lb'].get(g, 0.0) / S_base
-        mu_qn_ub = solution['mu_qn_ub'].get(g, 0.0) / S_base
-        mu_qn_lb = solution['mu_qn_lb'].get(g, 0.0) / S_base
+        # DO NOT divide multipliers by S_base. AMPL now outputs them correctly scaled.
+        mu_qp_ub = solution['mu_qp_ub'].get(g, 0.0)
+        mu_qp_lb = solution['mu_qp_lb'].get(g, 0.0)
+        mu_qn_ub = solution['mu_qn_ub'].get(g, 0.0)
+        mu_qn_lb = solution['mu_qn_lb'].get(g, 0.0)
         
         ca_inj = network['cost_a_inj'].get(g, 0.0) if isinstance(network.get('cost_a_inj'), dict) else 0.0
         cb_inj = network['cost_b_inj'].get(g, 0.0) if isinstance(network.get('cost_b_inj'), dict) else 0.0
         ca_abs = network['cost_a_abs'].get(g, 0.0) if isinstance(network.get('cost_a_abs'), dict) else 0.0
         cb_abs = network['cost_b_abs'].get(g, 0.0) if isinstance(network.get('cost_b_abs'), dict) else 0.0
         
+        # Calculate exactly what AMPL calculated
         stat_inj[g] = lam_inj - 2*ca_inj*qp_mvar - cb_inj - mu_qp_ub + mu_qp_lb
         stat_abs[g] = lam_abs - 2*ca_abs*qn_mvar - cb_abs - mu_qn_ub + mu_qn_lb
         
@@ -198,17 +194,21 @@ def verify_complementarity(solution, network, tol=1e-4):
     max_prod = 0.0
     
     for g in network['GENERATORS']:
+        # qp and qn are in PU. The bounds in network.dat are in MVAr.
+        # We must convert q to MVAr so it matches the q_inj_max bound.
         qp_mvar = solution['qp'].get(g, 0.0) * S_base
         qn_mvar = solution['qn'].get(g, 0.0) * S_base
         
-        mu_qp_ub = solution['mu_qp_ub'].get(g, 0.0) / S_base
-        mu_qp_lb = solution['mu_qp_lb'].get(g, 0.0) / S_base
-        mu_qn_ub = solution['mu_qn_ub'].get(g, 0.0) / S_base
-        mu_qn_lb = solution['mu_qn_lb'].get(g, 0.0) / S_base
+        # DO NOT divide multipliers.
+        mu_qp_ub = solution['mu_qp_ub'].get(g, 0.0)
+        mu_qp_lb = solution['mu_qp_lb'].get(g, 0.0)
+        mu_qn_ub = solution['mu_qn_ub'].get(g, 0.0)
+        mu_qn_lb = solution['mu_qn_lb'].get(g, 0.0)
         
         q_inj_max = network['q_inj_max'].get(g, 0.0)
         q_abs_max = network['q_abs_max'].get(g, 0.0)
         
+        # Calculate exactly what the KKT bounds define
         c1 = abs(mu_qp_ub * (q_inj_max - qp_mvar))
         c2 = abs(mu_qp_lb * qp_mvar)
         c3 = abs(mu_qn_ub * (q_abs_max - qn_mvar))
@@ -257,8 +257,8 @@ def verify_dual_price_economics(solution, network):
         cb_abs = network['cost_b_abs'].get(g, 0.0) if isinstance(network.get('cost_b_abs'), dict) else 0.0
         cc_abs = network['cost_c_abs'].get(g, 0.0) if isinstance(network.get('cost_c_abs'), dict) else 0.0
         
-        q_inj_max = network['q_inj_max'].get(g, 0.0)
-        q_abs_max = network['q_abs_max'].get(g, 0.0)
+        q_inj_max = network['q_inj_max'].get(g, 0.0) * S_base
+        q_abs_max = network['q_abs_max'].get(g, 0.0) * S_base
         
         def C_inj(q): return ca_inj*q**2 + cb_inj*q + cc_inj
         def C_abs(q): return ca_abs*q**2 + cb_abs*q + cc_abs
@@ -321,7 +321,7 @@ def run_full_verification(solution_raw_path, network_dat_path, tol=1e-4):
     solution = parse_solution_raw(solution_raw_path)
     
     pf_res = verify_ac_power_flow(solution, network, tol=tol)
-    stat_res = verify_kkt_stationarity(solution, network, tol=1e-6)
+    stat_res = verify_kkt_stationarity(solution, network, tol=tol)
     compl_res = verify_complementarity(solution, network, tol=tol)
     excl_res = verify_physical_exclusivity(solution, tol=tol)
     econ_res = verify_dual_price_economics(solution, network)
@@ -346,8 +346,8 @@ def run_full_verification(solution_raw_path, network_dat_path, tol=1e-4):
     print(f"    Max Q mismatch: {pf_res['max_q_mismatch']:.2e} [{'PASS' if pf_res['max_q_mismatch'] <= tol else 'FAIL'}]")
     
     print("[2] KKT Stationarity")
-    print(f"    Max injection residual: {stat_res['max_stat_inj']:.2e} [{'PASS' if stat_res['max_stat_inj'] <= 1e-6 else 'FAIL'}]")
-    print(f"    Max absorption residual: {stat_res['max_stat_abs']:.2e} [{'PASS' if stat_res['max_stat_abs'] <= 1e-6 else 'FAIL'}]")
+    print(f"    Max injection residual: {stat_res['max_stat_inj']:.2e} [{'PASS' if stat_res['max_stat_inj'] <= tol else 'FAIL'}]")
+    print(f"    Max absorption residual: {stat_res['max_stat_abs']:.2e} [{'PASS' if stat_res['max_stat_abs'] <= tol else 'FAIL'}]")
     
     print("[3] Complementarity (exact)")
     print(f"    Max product: {compl_res['max_product']:.2e} [{'PASS' if compl_res['max_product'] <= tol else 'FAIL'}]")

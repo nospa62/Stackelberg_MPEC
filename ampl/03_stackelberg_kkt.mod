@@ -30,6 +30,7 @@ param price_cap;
 param price_floor;
 param eps_smooth;             # current FB smoothing value — set in .run file before each solve
 param delta_abs := 1e-6;      # safety term in FB denominator (never set to zero)
+param delta_reg default 1e-6; # Tikhonov/FBRS regularization coefficient
 
 # Additional scalars from network.dat used by .run file
 param smoothing_eps_1;
@@ -81,8 +82,8 @@ var lam_abs {i in GENERATORS} >= price_floor, <= price_cap;  # absorption price
 
 # Network state variables
 var V {b in BUSES} >= V_min[b], <= V_max[b];
-var theta {BUSES};
-var P_slack {SLACK_BUSES} >= -9999, <= 9999;    # active power slack (free variable, absorbs active power mismatch)
+var theta {BUSES} >= -3.14159, <= 3.14159;
+var P_slack {SLACK_BUSES} >= -10.0, <= 10.0;    # active power slack (free variable, absorbs active power mismatch)
 
 # ══════════════════════════════════════════════════════
 # SECTION 6: DECISION VARIABLES — LOWER LEVEL (PRODUCERS, embedded via KKT)
@@ -116,7 +117,8 @@ var mu_qn_lb {GENERATORS} >= 0;    # multiplier for q- >= 0
 # SECTION 9: OBJECTIVE FUNCTION (MARKET OPERATOR)
 # ══════════════════════════════════════════════════════
 minimize TotalPayment:
-    sum {i in GENERATORS} (lam_inj[i] * qp[i] + lam_abs[i] * qn[i]);
+    sum {i in GENERATORS} (lam_inj[i] * (qp[i] * s_base_mva) + lam_abs[i] * (qn[i] * s_base_mva))
+    + 1e-6 * sum {i in GENERATORS} (lam_inj[i] + lam_abs[i]);
 
 # Economic interpretation:
 # - lam_inj[i]*qp[i]: payment to producer i for reactive injection
@@ -139,44 +141,48 @@ subject to P_balance {i in BUSES}:
     - P_load[i] 
     ==
     # 4. Y-bus network flow equations
-    sum {j in BUSES} V[i] * V[j] * (G[i,j] * cos(theta[i] - theta[j]) + B[i,j] * sin(theta[i] - theta[j]));
+    V[i] * sum {j in BUSES} V[j] * (G[i,j] * cos(theta[i] - theta[j]) + B[i,j] * sin(theta[i] - theta[j]));
 
 # Reactive power balance at every bus b
 # Net Q injection from generators (qp[i]-qn[i]) + fixed shunts - load = injected into network
 # CRITICAL: net Q from generator i at bus b = qp[i] - qn[i]
 # qp is injection (positive contribution), qn is absorption (negative contribution)
 subject to Q_balance {b in BUSES}:
-    ( sum {i in GENERATORS: gen_bus[i] = b} (qp[i] - qn[i]) )
+    ( sum {i in GENERATORS: gen_bus[i] == b} (qp[i] - qn[i]) )
     + Q_shunt[b]
     - Q_load[b]
-    =
+    ==
     V[b] * sum {j in BUSES} V[j] *
         ( G[b,j] * sin(theta[b] - theta[j])
         - B[b,j] * cos(theta[b] - theta[j]) );
 
-# Reference bus: fix angle and voltage
+# Reference bus: fix angle (voltage magnitude is released for economic dispatch)
 subject to slack_angle {b in SLACK_BUSES}: theta[b] = 0;
-subject to slack_voltage {b in SLACK_BUSES}: V[b] = V_slack;
+# subject to slack_voltage {b in SLACK_BUSES}: V[b] = V_slack;
 
 # ══════════════════════════════════════════════════════
 # SECTION 11: NETWORK INEQUALITY CONSTRAINTS
 # ══════════════════════════════════════════════════════
 
-# Voltage magnitude limits (already in variable bounds but kept as explicit constraints
+# Voltage magnitude limits applied to ALL buses including slack
+# (already in variable bounds but kept as explicit constraints
 # for dual variable extraction — these duals are the Q-LMPs used for validation)
-subject to V_lower {b in BUSES: b not in SLACK_BUSES}: V[b] >= V_min[b];
-subject to V_upper {b in BUSES: b not in SLACK_BUSES}: V[b] <= V_max[b];
+subject to V_lower {b in BUSES}: V[b] >= V_min[b];
+subject to V_upper {b in BUSES}: V[b] <= V_max[b];
 
 # Thermal limit on each branch (f,t)
 # Apparent power flow from f to t must not exceed S_max[f,t]
-# P_ft = V[f]^2 * G[f,t] - V[f]*V[t]*(G[f,t]*cos(theta[f]-theta[t]) + B[f,t]*sin(theta[f]-theta[t]))
-# Q_ft = -V[f]^2 * B[f,t] - V[f]*V[t]*(G[f,t]*sin(theta[f]-theta[t]) - B[f,t]*cos(theta[f]-theta[t]))
-subject to thermal_limit {(f,t) in BRANCHES}:
-    ( V[f]^2 * G[f,t]
-      - V[f]*V[t]*( G[f,t]*cos(theta[f]-theta[t]) + B[f,t]*sin(theta[f]-theta[t]) ) )^2
+subject to thermal_limit_ft {(f,t) in BRANCHES}:
+    ( -V[f]^2 * G[f,t] + V[f]*V[t]*( G[f,t]*cos(theta[f]-theta[t]) + B[f,t]*sin(theta[f]-theta[t]) ) )^2
     +
-    ( -V[f]^2 * B[f,t]
-      - V[f]*V[t]*( G[f,t]*sin(theta[f]-theta[t]) - B[f,t]*cos(theta[f]-theta[t]) ) )^2
+    ( V[f]^2 * B[f,t] + V[f]*V[t]*( G[f,t]*sin(theta[f]-theta[t]) - B[f,t]*cos(theta[f]-theta[t]) ) )^2
+    <= S_max[f,t]^2;
+
+# Apparent power flow from t to f must not exceed S_max[f,t]
+subject to thermal_limit_tf {(f,t) in BRANCHES}:
+    ( -V[t]^2 * G[t,f] + V[t]*V[f]*( G[t,f]*cos(theta[t]-theta[f]) + B[t,f]*sin(theta[t]-theta[f]) ) )^2
+    +
+    ( V[t]^2 * B[t,f] + V[t]*V[f]*( G[t,f]*sin(theta[t]-theta[f]) - B[t,f]*cos(theta[t]-theta[f]) ) )^2
     <= S_max[f,t]^2;
 
 # ══════════════════════════════════════════════════════
@@ -191,7 +197,7 @@ subject to thermal_limit {(f,t) in BRANCHES}:
 
 subject to KKT_stationarity_inj {i in GENERATORS}:
     lam_inj[i]
-    - 2 * cost_a_inj[i] * qp[i]
+    - 2 * cost_a_inj[i] * (qp[i] * s_base_mva)
     - cost_b_inj[i]
     - mu_qp_ub[i]
     + mu_qp_lb[i]
@@ -199,7 +205,7 @@ subject to KKT_stationarity_inj {i in GENERATORS}:
 
 subject to KKT_stationarity_abs {i in GENERATORS}:
     lam_abs[i]
-    - 2 * cost_a_abs[i] * qn[i]
+    - 2 * cost_a_abs[i] * (qn[i] * s_base_mva)
     - cost_b_abs[i]
     - mu_qn_ub[i]
     + mu_qn_lb[i]
@@ -215,38 +221,34 @@ subject to KKT_stationarity_abs {i in GENERATORS}:
 
 # Injection upper bound: mu_qp_ub * (q_inj_max - qp) = 0
 subject to KKT_compl_qp_ub {i in GENERATORS}:
-    mu_qp_ub[i] + (q_inj_max[i] - qp[i])
+    (1 + delta_reg) * mu_qp_ub[i] + (1 + delta_reg) * (q_inj_max[i] - qp[i])
     - sqrt( mu_qp_ub[i]^2 + (q_inj_max[i] - qp[i])^2 + eps_smooth^2 )
     = 0;
 
 # Injection lower bound: mu_qp_lb * qp = 0
 subject to KKT_compl_qp_lb {i in GENERATORS}:
-    mu_qp_lb[i] + qp[i]
+    (1 + delta_reg) * mu_qp_lb[i] + (1 + delta_reg) * qp[i]
     - sqrt( mu_qp_lb[i]^2 + qp[i]^2 + eps_smooth^2 )
     = 0;
 
 # Absorption upper bound: mu_qn_ub * (q_abs_max - qn) = 0
 subject to KKT_compl_qn_ub {i in GENERATORS}:
-    mu_qn_ub[i] + (q_abs_max[i] - qn[i])
+    (1 + delta_reg) * mu_qn_ub[i] + (1 + delta_reg) * (q_abs_max[i] - qn[i])
     - sqrt( mu_qn_ub[i]^2 + (q_abs_max[i] - qn[i])^2 + eps_smooth^2 )
     = 0;
 
 # Absorption lower bound: mu_qn_lb * qn = 0
 subject to KKT_compl_qn_lb {i in GENERATORS}:
-    mu_qn_lb[i] + qn[i]
+    (1 + delta_reg) * mu_qn_lb[i] + (1 + delta_reg) * qn[i]
     - sqrt( mu_qn_lb[i]^2 + qn[i]^2 + eps_smooth^2 )
     = 0;
 
 # ══════════════════════════════════════════════════════
-# SECTION 14: PHYSICAL EXCLUSIVITY CONSTRAINT
+# SECTION 14: RELAXED PHYSICAL EXCLUSIVITY
 # ══════════════════════════════════════════════════════
-# A producer cannot simultaneously inject and absorb reactive power.
-# Enforce: qp[i] * qn[i] = 0, qp[i] >= 0, qn[i] >= 0
-# Use Fischer-Burmeister smoothing (same form as complementarity above):
+# Prevents simultaneous injection/absorption trapping dynamically
 subject to physical_exclusivity {i in GENERATORS}:
-    qp[i] + qn[i]
-    - sqrt( qp[i]^2 + qn[i]^2 + eps_smooth^2 )
-    = 0;
+    qp[i] * qn[i] <= eps_smooth;
 
 # ══════════════════════════════════════════════════════
 # SECTION 15: AUXILIARY EXPRESSIONS (for output and validation)
@@ -264,10 +266,10 @@ var Q_flow {(f,t) in BRANCHES};
 
 subject to def_P_flow {(f,t) in BRANCHES}:
     P_flow[f,t] =
-        V[f]^2 * G[f,t]
-        - V[f]*V[t]*( G[f,t]*cos(theta[f]-theta[t]) + B[f,t]*sin(theta[f]-theta[t]) );
+        -V[f]^2 * G[f,t]
+        + V[f]*V[t]*( G[f,t]*cos(theta[f]-theta[t]) + B[f,t]*sin(theta[f]-theta[t]) );
 
 subject to def_Q_flow {(f,t) in BRANCHES}:
     Q_flow[f,t] =
-        -V[f]^2 * B[f,t]
-        - V[f]*V[t]*( G[f,t]*sin(theta[f]-theta[t]) - B[f,t]*cos(theta[f]-theta[t]) );
+        V[f]^2 * B[f,t]
+        + V[f]*V[t]*( G[f,t]*sin(theta[f]-theta[t]) - B[f,t]*cos(theta[f]-theta[t]) );

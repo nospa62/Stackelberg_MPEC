@@ -133,15 +133,34 @@ def process_excel_to_dat(excel_path, dat_path):
             b_m = -np.sqrt(max(0, y_m_mag**2 - g_m**2))
             y_m = (g_m + 1j * b_m) * (sn_mva / s_base_mva) # pu on system base
             
-        # IGNORING TAP AND SHIFT FOR Y-BUS SYMMETRY
-        # These properties will be handled inside the AMPL power balance equations
         i, j = bus_idx[h], bus_idx[l]
         
-        # Apply standard, symmetric series admittance
-        Y_bus[i, i] += y_t * parallel
+        # 1. Extract Tap Parameters from Excel
+        t_pos = get_val(row, 'tap_pos', 0.0)
+        t_step = get_val(row, 'tap_step_percent', 0.0)
+        shift_deg = get_val(row, 'shift_degree', 0.0)
+        
+        # 2. Calculate the Off-Nominal Tap Ratio (a)
+        # Formula: a = 1 + (pos * step/100)
+        # Neutral (pos=0) results in a = 1.0
+        tap_ratio = 1.0 + (t_pos * (t_step / 100.0))
+        
+        # 3. Safety Check: Prevent Division by Zero
+        if abs(tap_ratio) < 1e-4:
+            tap_ratio = 1.0  # Fallback to neutral if data is invalid
+            print(f"Warning: Invalid tap_ratio at Trafo {row.get('name')}. Resetting to 1.0.")
+
+        # 4. Calculate Complex Shift (phi)
+        shift_rad = np.radians(shift_deg)
+        # k = a * exp(j * phi)
+        k = tap_ratio * (np.cos(shift_rad) + 1j * np.sin(shift_rad))
+        
+        # 5. Apply Asymmetric Y-bus Logic
+        # Asymmetric model (tap usually on HV side 'i')
+        Y_bus[i, i] += (y_t / (tap_ratio**2)) * parallel
         Y_bus[j, j] += (y_t + y_m) * parallel
-        Y_bus[i, j] -= y_t * parallel
-        Y_bus[j, i] -= y_t * parallel
+        Y_bus[i, j] -= (y_t / np.conj(k)) * parallel
+        Y_bus[j, i] -= (y_t / k) * parallel
 
     G = np.real(Y_bus)
     B = np.imag(Y_bus)
@@ -302,12 +321,22 @@ def process_excel_to_dat(excel_path, dat_path):
         # 7. param V_min, V_max
         f.write("param V_min :=\n")
         for _, row in buses.iterrows():
-            f.write(f"{row['bus_id']} {row['v_min_pu']}\n")
+            # Safely get value, default to 0.95 if missing
+            v_min = get_val(row, 'v_min_pu', 0.95)
+            # Enforce strict 0.95 limit even if Excel has 0.9
+            if v_min < 0.95: 
+                v_min = 0.95
+            f.write(f"{row['bus_id']} {v_min}\n")
         f.write(";\n\n")
         
         f.write("param V_max :=\n")
         for _, row in buses.iterrows():
-            f.write(f"{row['bus_id']} {row['v_max_pu']}\n")
+            # Safely get value, default to 1.05 if missing
+            v_max = get_val(row, 'v_max_pu', 1.05)
+            # Enforce strict 1.05 limit even if Excel has 1.1
+            if v_max > 1.05: 
+                v_max = 1.05
+            f.write(f"{row['bus_id']} {v_max}\n")
         f.write(";\n\n")
         
         # 8. param V_slack

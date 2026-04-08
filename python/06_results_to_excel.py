@@ -118,7 +118,7 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         ("Total Q Absorbed (MVAr)", stats['total_q_absorbed_mvar']),
         ("Total Q Shunt (MVAr)", stats['total_q_shunt_mvar']),
         ("Total Q Load (MVAr)", stats['total_q_load_mvar']),
-        ("Q Balance Error (MVAr)", stats['q_balance_error_mvar']),
+        ("Net Grid Q Losses (MVAr)", stats['net_grid_q_losses_mvar']),
         ("Avg Injection Price (€/MVAr)", stats['average_injection_price_eur_mvar']),
         ("Avg Absorption Price (€/MVAr)", stats['average_absorption_price_eur_mvar']),
         ("Generators Injecting", stats['num_generators_injecting']),

@@ -17,6 +17,13 @@ reset;
 model ampl/03_stackelberg_kkt.mod;
 data ampl/network.dat;
 
+# Apply physical-to-per-unit cost scaling
+let {i in GENERATORS} cost_a_inj[i] := cost_a_inj[i] * (s_base_mva^2);
+let {i in GENERATORS} cost_b_inj[i] := cost_b_inj[i] * s_base_mva;
+
+let {i in GENERATORS} cost_a_abs[i] := cost_a_abs[i] * (s_base_mva^2);
+let {i in GENERATORS} cost_b_abs[i] := cost_b_abs[i] * s_base_mva;
+
 # Initialise variables (warm start)
 let {b in BUSES} V[b] := V_init[b];
 let {b in BUSES} theta[b] := theta_init[b];
@@ -35,11 +42,12 @@ option ipopt_options 'max_iter=3000 tol=1e-8 acceptable_tol=1e-6 mu_strategy=ada
 # ══════════════════════════════════════════════════════
 # PART 2 — Smoothing Continuation Loop
 # ══════════════════════════════════════════════════════
-param num_passes := 3;
+param num_passes := 4;
 param eps_seq {1..num_passes};
 let eps_seq[1] := 1e-2;
 let eps_seq[2] := 1e-4;
 let eps_seq[3] := 1e-6;
+let eps_seq[4] := 1e-8;
 
 for {pass in 1..num_passes} {
     let eps_smooth := eps_seq[pass];
@@ -65,8 +73,8 @@ for {pass in 1..num_passes} {
     for {i in GENERATORS} {
         printf "Gen %s: lam_inj=%.4f, lam_abs=%.4f, qp=%.4f MVAr, qn=%.4f MVAr, net_Q=%.4f MVAr, profit=%.4f\n",
             i, 
-            lam_inj[i], 
-            lam_abs[i], 
+            lam_inj[i] / s_base_mva, 
+            lam_abs[i] / s_base_mva, 
             qp[i] * s_base_mva, 
             qn[i] * s_base_mva, 
             (qp[i] - qn[i]) * s_base_mva,
@@ -102,7 +110,7 @@ printf "%g,%s,%g,%g\n", TotalPayment, solve_result, eps_smooth, s_base_mva >> am
 printf "\n[PRICES]\n" >> ampl/solution_summary.txt;
 printf "gen_id,lam_inj,lam_abs\n" >> ampl/solution_summary.txt;
 for {i in GENERATORS} {
-    printf "%s,%g,%g\n", i, lam_inj[i], lam_abs[i] >> ampl/solution_summary.txt;
+    printf "%s,%g,%g\n", i, lam_inj[i] / s_base_mva, lam_abs[i] / s_base_mva >> ampl/solution_summary.txt;
 }
 
 printf "\n[DISPATCH]\n" >> ampl/solution_summary.txt;
@@ -113,7 +121,7 @@ for {i in GENERATORS} {
         qp[i] * s_base_mva, 
         qn[i] * s_base_mva, 
         (qp[i] - qn[i]) * s_base_mva,
-        lam_inj[i]*qp[i] + lam_abs[i]*qn[i] 
+        (lam_inj[i]*qp[i] + lam_abs[i]*qn[i])
         - cost_a_inj[i]*qp[i]^2 - cost_b_inj[i]*qp[i] - cost_c_inj[i]*(if qp[i]>1e-6 then 1 else 0)
         - cost_a_abs[i]*qn[i]^2 - cost_b_abs[i]*qn[i] - cost_c_abs[i]*(if qn[i]>1e-6 then 1 else 0) 
         >> ampl/solution_summary.txt;
@@ -148,6 +156,7 @@ for {i in GENERATORS} {
 # Write ALL variable values using AMPL 'display' command
 option display_1col 10000;
 option display_width 1000;
+option display_precision 15;
 
 display lam_inj > ampl/solution_raw.txt;
 display lam_abs >> ampl/solution_raw.txt;

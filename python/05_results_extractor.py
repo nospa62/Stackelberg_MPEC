@@ -130,14 +130,16 @@ def _parse_network_dat(path: str) -> dict:
         data[param_name] = param_dict
         
     # Parse scalar parameters
-    scalar_pattern = re.compile(r'param\s+(\w+)\s*:=\s*([^;]+);')
+    scalar_pattern = re.compile(r'param\s+(\w+)\s*:=\s*([^\s;]+)\s*;')
     for match in scalar_pattern.finditer(content):
         param_name = match.group(1)
         val_str = match.group(2).strip()
         try:
-            data[param_name] = float(val_str)
+            if param_name not in data or not isinstance(data[param_name], dict):
+                data[param_name] = float(val_str)
         except ValueError:
-            data[param_name] = val_str
+            if param_name not in data or not isinstance(data[param_name], dict):
+                data[param_name] = val_str
             
     return data
 
@@ -149,6 +151,23 @@ def compute_market_statistics(results: dict, network_dat_path: str) -> dict:
     s_base = results['solve_info']['s_base']
     
     disp = results['dispatch']
+    prices = results['prices']
+    
+    # Define an economic threshold (e.g., 1e-5 MVAr)
+    DISPATCH_THRESHOLD = 1e-5 
+    
+    # Filter out economic artifacts for idle generators
+    for idx in disp.index:
+        if abs(disp.at[idx, 'qp_mvar']) < DISPATCH_THRESHOLD:
+            disp.at[idx, 'qp_mvar'] = 0.0
+            if idx in prices.index:
+                prices.at[idx, 'lam_inj'] = 0.0
+                
+        if abs(disp.at[idx, 'qn_mvar']) < DISPATCH_THRESHOLD:
+            disp.at[idx, 'qn_mvar'] = 0.0
+            if idx in prices.index:
+                prices.at[idx, 'lam_abs'] = 0.0
+                
     tot_q_inj = disp['qp_mvar'].sum()
     tot_q_abs = disp['qn_mvar'].sum()
     
@@ -168,8 +187,8 @@ def compute_market_statistics(results: dict, network_dat_path: str) -> dict:
     tot_q_shunt = q_shunt_pu * s_base
     tot_q_load = q_load_pu * s_base
     
-    # Q balance error (Net Injected + Shunts - Load)
-    q_balance_error = (tot_q_inj - tot_q_abs + tot_q_shunt) - tot_q_load
+    # Net grid Q losses (Net Injected + Shunts - Load - Absorbed)
+    q_losses = tot_q_inj + tot_q_shunt - tot_q_load - tot_q_abs
     
     tot_payment = results['solve_info']['objective']
     
@@ -195,7 +214,7 @@ def compute_market_statistics(results: dict, network_dat_path: str) -> dict:
         'total_q_absorbed_mvar': tot_q_abs,
         'total_q_shunt_mvar': tot_q_shunt,
         'total_q_load_mvar': tot_q_load,
-        'q_balance_error_mvar': q_balance_error,
+        'net_grid_q_losses_mvar': -q_losses,
         'total_payment_eur': tot_payment,
         'average_injection_price_eur_mvar': avg_inj_price,
         'average_absorption_price_eur_mvar': avg_abs_price,
@@ -230,7 +249,8 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
     if not isinstance(cost_b_abs, dict): cost_b_abs = {}
     
     for _, row in df.iterrows():
-        gen = str(row['gen_id'])
+        gen_id_val = row['gen_id']
+        gen = str(int(gen_id_val)) if isinstance(gen_id_val, float) and gen_id_val.is_integer() else str(gen_id_val)
         qp_pu = row['qp_mvar'] / s_base
         qn_pu = row['qn_mvar'] / s_base
         lam_inj = row['lam_inj']
@@ -241,17 +261,17 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
         ca_abs = float(cost_a_abs.get(gen, 0.0))
         cb_abs = float(cost_b_abs.get(gen, 0.0))
         
-        mu_qp_ub = row['mu_qp_ub']
-        mu_qp_lb = row['mu_qp_lb']
-        mu_qn_ub = row['mu_qn_ub']
-        mu_qn_lb = row['mu_qn_lb']
+        mu_qp_ub = row['mu_qp_ub'] / s_base
+        mu_qp_lb = row['mu_qp_lb'] / s_base
+        mu_qn_ub = row['mu_qn_ub'] / s_base
+        mu_qn_lb = row['mu_qn_lb'] / s_base
         
         # a) Injecting
         if qp_pu * s_base > 1e-3:
             if lam_inj < cb_inj - 1e-4:
                 violations.append(f"{gen} injecting but lam_inj ({lam_inj:.4f}) < cost_b_inj ({cb_inj:.4f})")
             
-            expected_lam = 2 * ca_inj * qp_pu + cb_inj + mu_qp_ub - mu_qp_lb
+            expected_lam = 2 * ca_inj * (qp_pu * s_base) + cb_inj + mu_qp_ub - mu_qp_lb
             if abs(lam_inj - expected_lam) > 1e-3:
                 violations.append(f"{gen} injecting: stationarity violated. lam_inj={lam_inj:.4f}, expected={expected_lam:.4f}")
                 
@@ -260,7 +280,7 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
             if lam_abs < cb_abs - 1e-4:
                 violations.append(f"{gen} absorbing but lam_abs ({lam_abs:.4f}) < cost_b_abs ({cb_abs:.4f})")
             
-            expected_lam = 2 * ca_abs * qn_pu + cb_abs + mu_qn_ub - mu_qn_lb
+            expected_lam = 2 * ca_abs * (qn_pu * s_base) + cb_abs + mu_qn_ub - mu_qn_lb
             if abs(lam_abs - expected_lam) > 1e-3:
                 violations.append(f"{gen} absorbing: stationarity violated. lam_abs={lam_abs:.4f}, expected={expected_lam:.4f}")
                 
