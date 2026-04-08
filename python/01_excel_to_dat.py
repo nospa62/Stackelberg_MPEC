@@ -156,11 +156,20 @@ def process_excel_to_dat(excel_path, dat_path):
         k = tap_ratio * (np.cos(shift_rad) + 1j * np.sin(shift_rad))
         
         # 5. Apply Asymmetric Y-bus Logic
-        # Asymmetric model (tap usually on HV side 'i')
-        Y_bus[i, i] += (y_t / (tap_ratio**2)) * parallel
-        Y_bus[j, j] += (y_t + y_m) * parallel
-        Y_bus[i, j] -= (y_t / np.conj(k)) * parallel
-        Y_bus[j, i] -= (y_t / k) * parallel
+        g_t = np.real(y_t)
+        b_t = np.imag(y_t)
+        g_m = np.real(y_m)
+        b_m = np.imag(y_m)
+        a = tap_ratio
+        
+        # User formula:
+        # G[f,f] += g_t/a^2, G[f,t] -= g_t/a, G[t,f] -= g_t/a, G[t,t] += g_t
+        # B[f,f] += b_t/a^2 + b_c/2, B[f,t] -= b_t/a, B[t,f] -= b_t/a, B[t,t] += b_t + b_c/2
+        
+        Y_bus[i, i] += (g_t / (a**2) + 1j * (b_t / (a**2) + b_m / 2.0)) * parallel
+        Y_bus[j, j] += (g_t + 1j * (b_t + b_m / 2.0)) * parallel
+        Y_bus[i, j] -= (g_t / a + 1j * (b_t / a)) * parallel
+        Y_bus[j, i] -= (g_t / a + 1j * (b_t / a)) * parallel
 
     G = np.real(Y_bus)
     B = np.imag(Y_bus)

@@ -28,7 +28,7 @@ param s_base_mva;
 param f_hz;
 param price_cap;
 param price_floor;
-param eps_smooth;             # current FB smoothing value — set in .run file before each solve
+param eps_smooth default 1e-2;             # current FB smoothing value — set in .run file before each solve
 param delta_abs := 1e-6;      # safety term in FB denominator (never set to zero)
 param delta_reg default 1e-6; # Tikhonov/FBRS regularization coefficient
 
@@ -83,7 +83,7 @@ var lam_abs {i in GENERATORS} >= price_floor, <= price_cap;  # absorption price
 # Network state variables
 var V {b in BUSES} >= V_min[b], <= V_max[b];
 var theta {BUSES} >= -3.14159, <= 3.14159;
-var P_slack {SLACK_BUSES} >= -10.0, <= 10.0;    # active power slack (free variable, absorbs active power mismatch)
+var P_slack {SLACK_BUSES} >= -20.0, <= 20.0;    # active power slack (free variable, absorbs active power mismatch)
 
 # ══════════════════════════════════════════════════════
 # SECTION 6: DECISION VARIABLES — LOWER LEVEL (PRODUCERS, embedded via KKT)
@@ -117,8 +117,14 @@ var mu_qn_lb {GENERATORS} >= 0;    # multiplier for q- >= 0
 # SECTION 9: OBJECTIVE FUNCTION (MARKET OPERATOR)
 # ══════════════════════════════════════════════════════
 minimize TotalPayment:
-    sum {i in GENERATORS} (lam_inj[i] * qp[i] + lam_abs[i] * qn[i])
-    + 1e-6 * sum {i in GENERATORS} (lam_inj[i] + lam_abs[i]);
+    sum {i in GENERATORS} (
+        lam_inj[i] * qp[i] * s_base_mva
+      + lam_abs[i] * qn[i] * s_base_mva
+    )
+    + delta_reg * s_base_mva * sum {i in GENERATORS} (
+        lam_inj[i] * (1 - qp[i] / (q_inj_max[i] + 1e-8))
+      + lam_abs[i] * (1 - qn[i] / (q_abs_max[i] + 1e-8))
+    );
 
 # Economic interpretation:
 # - lam_inj[i]*qp[i]: payment to producer i for reactive injection
@@ -158,7 +164,7 @@ subject to Q_balance {b in BUSES}:
 
 # Reference bus: fix angle (voltage magnitude is released for economic dispatch)
 subject to slack_angle {b in SLACK_BUSES}: theta[b] = 0;
-# subject to slack_voltage {b in SLACK_BUSES}: V[b] = V_slack;
+subject to slack_voltage {b in SLACK_BUSES}: V[b] = V_slack;
 
 # ══════════════════════════════════════════════════════
 # SECTION 11: NETWORK INEQUALITY CONSTRAINTS
@@ -173,16 +179,16 @@ subject to V_upper {b in BUSES}: V[b] <= V_max[b];
 # Thermal limit on each branch (f,t)
 # Apparent power flow from f to t must not exceed S_max[f,t]
 subject to thermal_limit_ft {(f,t) in BRANCHES}:
-    ( -V[f]^2 * G[f,t] + V[f]*V[t]*( G[f,t]*cos(theta[f]-theta[t]) + B[f,t]*sin(theta[f]-theta[t]) ) )^2
+    ( V[f]^2 * G[f,t] - V[f]*V[t]*( G[f,t]*cos(theta[f]-theta[t]) + B[f,t]*sin(theta[f]-theta[t]) ) )^2
     +
-    ( V[f]^2 * B[f,t] + V[f]*V[t]*( G[f,t]*sin(theta[f]-theta[t]) - B[f,t]*cos(theta[f]-theta[t]) ) )^2
+    ( -V[f]^2 * B[f,t] - V[f]*V[t]*( G[f,t]*sin(theta[f]-theta[t]) - B[f,t]*cos(theta[f]-theta[t]) ) )^2
     <= S_max[f,t]^2;
 
 # Apparent power flow from t to f must not exceed S_max[f,t]
 subject to thermal_limit_tf {(f,t) in BRANCHES}:
-    ( -V[t]^2 * G[t,f] + V[t]*V[f]*( G[t,f]*cos(theta[t]-theta[f]) + B[t,f]*sin(theta[t]-theta[f]) ) )^2
+    ( V[t]^2 * G[t,f] - V[t]*V[f]*( G[t,f]*cos(theta[t]-theta[f]) + B[t,f]*sin(theta[t]-theta[f]) ) )^2
     +
-    ( V[t]^2 * B[t,f] + V[t]*V[f]*( G[t,f]*sin(theta[t]-theta[f]) - B[t,f]*cos(theta[t]-theta[f]) ) )^2
+    ( -V[t]^2 * B[t,f] - V[t]*V[f]*( G[t,f]*sin(theta[t]-theta[f]) - B[t,f]*cos(theta[t]-theta[f]) ) )^2
     <= S_max[f,t]^2;
 
 # ══════════════════════════════════════════════════════
@@ -264,10 +270,10 @@ var Q_flow {(f,t) in BRANCHES};
 
 subject to def_P_flow {(f,t) in BRANCHES}:
     P_flow[f,t] =
-        -V[f]^2 * G[f,t]
-        + V[f]*V[t]*( G[f,t]*cos(theta[f]-theta[t]) + B[f,t]*sin(theta[f]-theta[t]) );
+        V[f]^2 * G[f,t]
+        - V[f]*V[t]*( G[f,t]*cos(theta[f]-theta[t]) + B[f,t]*sin(theta[f]-theta[t]) );
 
 subject to def_Q_flow {(f,t) in BRANCHES}:
     Q_flow[f,t] =
-        V[f]^2 * B[f,t]
-        + V[f]*V[t]*( G[f,t]*sin(theta[f]-theta[t]) - B[f,t]*cos(theta[f]-theta[t]) );
+        -V[f]^2 * B[f,t]
+        - V[f]*V[t]*( G[f,t]*sin(theta[f]-theta[t]) - B[f,t]*cos(theta[f]-theta[t]) );
