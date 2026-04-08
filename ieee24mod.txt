@@ -1,0 +1,188 @@
+# ==========================================
+# Comprehensive AC OPF / Market Formulation
+# ==========================================
+
+# --- SETS ---
+set BUS;
+set LOAD;
+set SHUNT default {};
+set GEN;
+set EXTGRID;
+set LINE;
+set TRAFO;
+
+# --- SCALAR SYSTEM PARAMETERS (From GameParameters) ---
+param s_base_mva default 100;
+param f_hz default 50;
+param price_cap default 500;
+param price_floor default 0;
+param ipopt_max_iter default 3000;
+param ipopt_tol default 1e-8;
+param lindo_maxtime default 300;
+param enforce_v_limits default 1;
+param enforce_s_limits default 1;
+param market_interval_min default 15;
+param bus_id_offset default 1;
+
+param pi := 3.14159265359;
+
+# --- BUS PARAMETERS ---
+param bus_name {BUS} symbolic;
+param vn_kv {BUS};
+param bus_type {BUS} symbolic;
+param zone {BUS} symbolic;
+param v_min_pu {BUS};
+param v_max_pu {BUS};
+param bus_in_service {BUS};
+param geo_x {BUS} default 0;
+param geo_y {BUS} default 0;
+
+# --- LOAD PARAMETERS ---
+param load_name {LOAD} symbolic;
+param load_bus {LOAD} symbolic in BUS;
+param p_mw {LOAD};
+param q_mvar {LOAD};
+param const_z_pct {LOAD} default 0;
+param const_i_pct {LOAD} default 0;
+param const_p_pct {LOAD} default 100;
+param scaling {LOAD} default 1;
+param load_in_service {LOAD};
+
+# --- SHUNT PARAMETERS ---
+param shunt_name {SHUNT} symbolic;
+param shunt_bus {SHUNT} symbolic in BUS;
+param shunt_q_mvar {SHUNT};
+param shunt_p_mw {SHUNT} default 0;
+param shunt_vn_kv {SHUNT};
+param step {SHUNT} default 1;
+param max_step {SHUNT} default 1;
+param include_in_market {SHUNT} default 0;
+param shunt_in_service {SHUNT};
+
+# --- GENERATOR PARAMETERS ---
+param gen_name {GEN} symbolic;
+param gen_bus {GEN} symbolic in BUS;
+param gen_p_mw {GEN};
+param gen_q_mvar {GEN};
+param gen_vm_pu {GEN};
+param min_p_mw {GEN};
+param max_p_mw {GEN};
+param min_q_mvar {GEN};
+param max_q_mvar {GEN};
+param g_cost_a_inj {GEN};
+param g_cost_b_inj {GEN};
+param g_cost_c_inj {GEN};
+param g_cost_a_abs {GEN};
+param g_cost_b_abs {GEN};
+param g_cost_c_abs {GEN};
+param gen_in_service {GEN};
+
+# --- EXTERNAL GRID PARAMETERS ---
+param ext_name {EXTGRID} symbolic;
+param ext_bus {EXTGRID} symbolic in BUS;
+param ext_vm_pu {EXTGRID};
+param ext_va_deg {EXTGRID};
+param ext_min_q {EXTGRID};
+param ext_max_q {EXTGRID};
+param e_cost_a_inj {EXTGRID};
+param e_cost_b_inj {EXTGRID};
+param e_cost_c_inj {EXTGRID};
+param e_cost_a_abs {EXTGRID};
+param e_cost_b_abs {EXTGRID};
+param e_cost_c_abs {EXTGRID};
+param ext_market {EXTGRID};
+param ext_slack_wt {EXTGRID};
+param ext_in_service {EXTGRID};
+
+# --- LINE PARAMETERS ---
+param line_name {LINE} symbolic;
+param l_from {LINE} symbolic in BUS;
+param l_to {LINE} symbolic in BUS;
+param length_km {LINE};
+param r_ohm_km {LINE};
+param x_ohm_km {LINE};
+param c_nf_km {LINE};
+param g_us_km {LINE} default 0;
+param max_i_ka {LINE};
+param s_max_mva {LINE};
+param l_parallel {LINE} default 1;
+param l_in_service {LINE};
+
+# --- TRANSFORMER PARAMETERS ---
+param trafo_name {TRAFO} symbolic;
+param t_hv {TRAFO} symbolic in BUS;
+param t_lv {TRAFO} symbolic in BUS;
+param t_sn_mva {TRAFO};
+param t_vn_hv {TRAFO};
+param t_vn_lv {TRAFO};
+param vk_pct {TRAFO};
+param vkr_pct {TRAFO};
+param pfe_kw {TRAFO} default 0;
+param i0_pct {TRAFO} default 0;
+param shift_deg {TRAFO} default 0;
+param tap_side {TRAFO} symbolic default 'none';
+param tap_neutral {TRAFO} default 0;
+param tap_min {TRAFO} default 0;
+param tap_max {TRAFO} default 0;
+param tap_step_pct {TRAFO} default 0;
+param tap_pos {TRAFO} default 0;
+param t_parallel {TRAFO} default 1;
+param t_in_service {TRAFO};
+
+# --- DYNAMIC PER-UNIT DERIVATIONS ---
+param Pd {i in BUS} := sum {ld in LOAD: load_bus[ld] == i and load_in_service[ld]==1} p_mw[ld] / s_base_mva;
+param Qd {i in BUS} := sum {ld in LOAD: load_bus[ld] == i and load_in_service[ld]==1} q_mvar[ld] / s_base_mva;
+param Bsh {i in BUS} := sum {sh in SHUNT: shunt_bus[sh] == i and shunt_in_service[sh]==1} (shunt_q_mvar[sh] / s_base_mva);
+
+param Zbase_l {l in LINE} := vn_kv[l_from[l]]^2 / s_base_mva;
+param r_pu_l {l in LINE} := (r_ohm_km[l] * length_km[l]) / Zbase_l[l] / l_parallel[l];
+param x_pu_l {l in LINE} := (x_ohm_km[l] * length_km[l]) / Zbase_l[l] / l_parallel[l];
+param bc_pu_l {l in LINE} := (2 * pi * f_hz * c_nf_km[l] * 1e-9 * length_km[l]) * Zbase_l[l] * l_parallel[l];
+
+param g_l {l in LINE} := r_pu_l[l] / (r_pu_l[l]^2 + x_pu_l[l]^2);
+param b_l {l in LINE} := -x_pu_l[l] / (r_pu_l[l]^2 + x_pu_l[l]^2);
+
+param r_pu_t {t in TRAFO} := max(0.0001, (vkr_pct[t]/100) * (s_base_mva / (t_sn_mva[t] * t_parallel[t])));
+param z_pu_t {t in TRAFO} := (vk_pct[t]/100) * (s_base_mva / (t_sn_mva[t] * t_parallel[t]));
+param x_pu_t {t in TRAFO} := sqrt(max(0.000001, z_pu_t[t]^2 - r_pu_t[t]^2));
+
+param g_t {t in TRAFO} := r_pu_t[t] / (r_pu_t[t]^2 + x_pu_t[t]^2);
+param b_t {t in TRAFO} := -x_pu_t[t] / (r_pu_t[t]^2 + x_pu_t[t]^2);
+
+# --- VARIABLES ---
+var Vm {i in BUS} >= (if enforce_v_limits then v_min_pu[i] else 0.5), <= (if enforce_v_limits then v_max_pu[i] else 1.5), := 1.0;
+var Va {BUS} := 0.0;                 
+
+var Pg {g in GEN} >= min_p_mw[g]/s_base_mva, <= max_p_mw[g]/s_base_mva, := gen_p_mw[g]/s_base_mva; 
+var Qg {g in GEN} >= min_q_mvar[g]/s_base_mva, <= max_q_mvar[g]/s_base_mva, := gen_q_mvar[g]/s_base_mva; 
+
+var P_ext {e in EXTGRID} >= -9999/s_base_mva, <= 9999/s_base_mva; 
+var Q_ext {e in EXTGRID} >= ext_min_q[e]/s_base_mva, <= ext_max_q[e]/s_base_mva;
+
+# --- OBJECTIVE FUNCTION (Loss Minimization) ---
+minimize Total_Losses: 
+    (sum {g in GEN} Pg[g]) + (sum {e in EXTGRID} P_ext[e]) + 0.1 * ((sum {g in GEN} Qg[g]) + (sum {e in EXTGRID} Q_ext[e]));
+
+# --- CONSTRAINTS ---
+subject to Reference {e in EXTGRID: ext_slack_wt[e] >= 1}: 
+    Va[ext_bus[e]] == ext_va_deg[e] * pi / 180;
+
+subject to P_Balance {i in BUS}:
+    (sum {g in GEN: gen_bus[g] == i and gen_in_service[g]==1} Pg[g]) + 
+    (sum {e in EXTGRID: ext_bus[e] == i and ext_in_service[e]==1} P_ext[e]) - Pd[i] ==
+    Vm[i]^2 * (sum {l in LINE: (l_from[l]==i or l_to[l]==i) and l_in_service[l]==1} g_l[l] + 
+               sum {t in TRAFO: (t_hv[t]==i or t_lv[t]==i) and t_in_service[t]==1} g_t[t])
+    - sum {l in LINE: l_from[l]==i and l_in_service[l]==1} Vm[i]*Vm[l_to[l]]*(g_l[l]*cos(Va[i]-Va[l_to[l]]) + b_l[l]*sin(Va[i]-Va[l_to[l]]))
+    - sum {l in LINE: l_to[l]==i and l_in_service[l]==1} Vm[i]*Vm[l_from[l]]*(g_l[l]*cos(Va[i]-Va[l_from[l]]) + b_l[l]*sin(Va[i]-Va[l_from[l]]))
+    - sum {t in TRAFO: t_hv[t]==i and t_in_service[t]==1} Vm[i]*Vm[t_lv[t]]*(g_t[t]*cos(Va[i]-Va[t_lv[t]]) + b_t[t]*sin(Va[i]-Va[t_lv[t]]))
+    - sum {t in TRAFO: t_lv[t]==i and t_in_service[t]==1} Vm[i]*Vm[t_hv[t]]*(g_t[t]*cos(Va[i]-Va[t_hv[t]]) + b_t[t]*sin(Va[i]-Va[t_hv[t]]));
+
+subject to Q_Balance {i in BUS}:
+    (sum {g in GEN: gen_bus[g] == i and gen_in_service[g]==1} Qg[g]) + 
+    (sum {e in EXTGRID: ext_bus[e] == i and ext_in_service[e]==1} Q_ext[e]) - Qd[i] ==
+    - Vm[i]^2 * (sum {l in LINE: (l_from[l]==i or l_to[l]==i) and l_in_service[l]==1} (b_l[l] + bc_pu_l[l]/2) + 
+                 sum {t in TRAFO: (t_hv[t]==i or t_lv[t]==i) and t_in_service[t]==1} b_t[t] + Bsh[i])
+    - sum {l in LINE: l_from[l]==i and l_in_service[l]==1} Vm[i]*Vm[l_to[l]]*(g_l[l]*sin(Va[i]-Va[l_to[l]]) - b_l[l]*cos(Va[i]-Va[l_to[l]]))
+    - sum {l in LINE: l_to[l]==i and l_in_service[l]==1} Vm[i]*Vm[l_from[l]]*(g_l[l]*sin(Va[i]-Va[l_from[l]]) - b_l[l]*cos(Va[i]-Va[l_from[l]]))
+    - sum {t in TRAFO: t_hv[t]==i and t_in_service[t]==1} Vm[i]*Vm[t_lv[t]]*(g_t[t]*sin(Va[i]-Va[t_lv[t]]) - b_t[t]*cos(Va[i]-Va[t_lv[t]]))
+    - sum {t in TRAFO: t_lv[t]==i and t_in_service[t]==1} Vm[i]*Vm[t_hv[t]]*(g_t[t]*sin(Va[i]-Va[t_hv[t]]) - b_t[t]*cos(Va[i]-Va[t_hv[t]]));

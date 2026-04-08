@@ -1,0 +1,206 @@
+# ==============================================================================
+# CRITICAL NOTES:
+# ==============================================================================
+# - eps_smooth must be assigned BEFORE calling solve in each pass.
+#   Use: let eps_smooth := 1e-2; solve; let eps_smooth := 1e-4; solve; etc.
+# - Do NOT reset the model between passes — variables retain warm-start values.
+# - Price units: if prices in .dat are in €/MVAr (not pu), report them directly.
+#                if prices are in pu, convert: price_eur_mvar = price_pu * s_base_mva.
+# - Q conversion: qp[i] and qn[i] are in pu. Multiply by s_base_mva for MVAr display.
+# - P_slack is in pu. Multiply by s_base_mva for MW display.
+# ==============================================================================
+
+# ══════════════════════════════════════════════════════
+# PART 1 — Setup
+# ══════════════════════════════════════════════════════
+reset;
+model ampl/03_stackelberg_kkt.mod;
+data ampl/network.dat;
+
+# Initialise variables (warm start)
+let {b in BUSES} V[b] := V_init[b];
+let {b in BUSES} theta[b] := theta_init[b];
+let {i in GENERATORS} qp[i] := q_init_inj[i];
+let {i in GENERATORS} qn[i] := q_init_abs[i];
+let {i in GENERATORS} lam_inj[i] := price_cap / 2;
+let {i in GENERATORS} lam_abs[i] := price_cap / 2;
+let {i in GENERATORS} mu_qp_ub[i] := 0;
+let {i in GENERATORS} mu_qp_lb[i] := 0;
+let {i in GENERATORS} mu_qn_ub[i] := 0;
+let {i in GENERATORS} mu_qn_lb[i] := 0;
+
+option solver ipopt;
+option ipopt_options 'max_iter=3000 tol=1e-8 acceptable_tol=1e-6 mu_strategy=adaptive nlp_scaling_method=gradient-based bound_push=1e-6 bound_frac=1e-6 print_level=5 file_print_level=5 output_file=ampl/ipopt_log.txt';
+
+# ══════════════════════════════════════════════════════
+# PART 2 — Smoothing Continuation Loop
+# ══════════════════════════════════════════════════════
+param num_passes := 3;
+param eps_seq {1..num_passes};
+let eps_seq[1] := 1e-2;
+let eps_seq[2] := 1e-4;
+let eps_seq[3] := 1e-6;
+
+for {pass in 1..num_passes} {
+    let eps_smooth := eps_seq[pass];
+    
+    printf "\n======================================================\n";
+    printf "PASS %d: eps_smooth = %g\n", pass, eps_smooth;
+    printf "======================================================\n";
+    
+    # For pass 1: uses initial values from q_init_inj, q_init_abs, V_init, theta_init (set by 'let' in .mod)
+    # For passes 2 and 3: warm starts from previous solution automatically
+    solve;
+    
+    if solve_result == "infeasible" or solve_result == "failure" then {
+        printf "\nWARNING: Solve failed with status '%s'. Continuing to next pass...\n", solve_result;
+    }
+    
+    printf "\n--- SOLVE INFO ---\n";
+    printf "Objective (TotalPayment): %g\n", TotalPayment;
+    printf "Solve Result: %s\n", solve_result;
+    printf "Solve Message: %s\n", solve_message;
+    
+    printf "\n--- GENERATOR DISPATCH & PRICES ---\n";
+    for {i in GENERATORS} {
+        printf "Gen %s: lam_inj=%.4f, lam_abs=%.4f, qp=%.4f MVAr, qn=%.4f MVAr, net_Q=%.4f MVAr, profit=%.4f\n",
+            i, 
+            lam_inj[i], 
+            lam_abs[i], 
+            qp[i] * s_base_mva, 
+            qn[i] * s_base_mva, 
+            (qp[i] - qn[i]) * s_base_mva,
+            lam_inj[i]*qp[i] + lam_abs[i]*qn[i] 
+            - cost_a_inj[i]*qp[i]^2 - cost_b_inj[i]*qp[i] - cost_c_inj[i]*(if qp[i]>1e-6 then 1 else 0)
+            - cost_a_abs[i]*qn[i]^2 - cost_b_abs[i]*qn[i] - cost_c_abs[i]*(if qn[i]>1e-6 then 1 else 0);
+    }
+    
+    printf "\n--- BUS VOLTAGES ---\n";
+    for {b in BUSES} {
+        printf "Bus %s: V=%.4f pu, theta=%.4f deg\n", b, V[b], theta[b] * 180 / 3.14159265359;
+    }
+    
+    printf "\n--- BRANCH FLOWS ---\n";
+    for {(f,t) in BRANCHES} {
+        printf "Branch %s->%s: P=%.4f MW, Q=%.4f MVAr, loading=%.2f%%\n",
+            f, t, 
+            P_flow[f,t] * s_base_mva, 
+            Q_flow[f,t] * s_base_mva,
+            sqrt(P_flow[f,t]^2 + Q_flow[f,t]^2) / S_max[f,t] * 100;
+    }
+}
+
+# ══════════════════════════════════════════════════════
+# PART 3 — Write Solution Output Files
+# ══════════════════════════════════════════════════════
+
+# File 1: ampl/solution_summary.txt
+printf "[SOLVE INFO]\n" > ampl/solution_summary.txt;
+printf "objective,solve_result,eps_smooth_final,s_base_mva\n" >> ampl/solution_summary.txt;
+printf "%g,%s,%g,%g\n", TotalPayment, solve_result, eps_smooth, s_base_mva >> ampl/solution_summary.txt;
+
+printf "\n[PRICES]\n" >> ampl/solution_summary.txt;
+printf "gen_id,lam_inj,lam_abs\n" >> ampl/solution_summary.txt;
+for {i in GENERATORS} {
+    printf "%s,%g,%g\n", i, lam_inj[i], lam_abs[i] >> ampl/solution_summary.txt;
+}
+
+printf "\n[DISPATCH]\n" >> ampl/solution_summary.txt;
+printf "gen_id,bus_id,qp_mvar,qn_mvar,q_net_mvar,profit_eur\n" >> ampl/solution_summary.txt;
+for {i in GENERATORS} {
+    printf "%s,%s,%g,%g,%g,%g\n", 
+        i, gen_bus[i], 
+        qp[i] * s_base_mva, 
+        qn[i] * s_base_mva, 
+        (qp[i] - qn[i]) * s_base_mva,
+        lam_inj[i]*qp[i] + lam_abs[i]*qn[i] 
+        - cost_a_inj[i]*qp[i]^2 - cost_b_inj[i]*qp[i] - cost_c_inj[i]*(if qp[i]>1e-6 then 1 else 0)
+        - cost_a_abs[i]*qn[i]^2 - cost_b_abs[i]*qn[i] - cost_c_abs[i]*(if qn[i]>1e-6 then 1 else 0) 
+        >> ampl/solution_summary.txt;
+}
+
+printf "\n[VOLTAGES]\n" >> ampl/solution_summary.txt;
+printf "bus_id,V_pu,theta_deg\n" >> ampl/solution_summary.txt;
+for {b in BUSES} {
+    printf "%s,%g,%g\n", b, V[b], theta[b] * 180 / 3.14159265359 >> ampl/solution_summary.txt;
+}
+
+printf "\n[BRANCH_FLOWS]\n" >> ampl/solution_summary.txt;
+printf "from_bus,to_bus,P_flow_mw,Q_flow_mva,loading_pct\n" >> ampl/solution_summary.txt;
+for {(f,t) in BRANCHES} {
+    printf "%s,%s,%g,%g,%g\n", 
+        f, t, 
+        P_flow[f,t] * s_base_mva, 
+        Q_flow[f,t] * s_base_mva, 
+        sqrt(P_flow[f,t]^2 + Q_flow[f,t]^2) / S_max[f,t] * 100 
+        >> ampl/solution_summary.txt;
+}
+
+printf "\n[KKT_MULTIPLIERS]\n" >> ampl/solution_summary.txt;
+printf "gen_id,mu_qp_ub,mu_qp_lb,mu_qn_ub,mu_qn_lb\n" >> ampl/solution_summary.txt;
+for {i in GENERATORS} {
+    printf "%s,%g,%g,%g,%g\n", 
+        i, mu_qp_ub[i], mu_qp_lb[i], mu_qn_ub[i], mu_qn_lb[i] 
+        >> ampl/solution_summary.txt;
+}
+
+# File 2: ampl/solution_raw.txt
+# Write ALL variable values using AMPL 'display' command
+option display_1col 10000;
+option display_width 1000;
+
+display lam_inj > ampl/solution_raw.txt;
+display lam_abs >> ampl/solution_raw.txt;
+display qp >> ampl/solution_raw.txt;
+display qn >> ampl/solution_raw.txt;
+display V >> ampl/solution_raw.txt;
+display theta >> ampl/solution_raw.txt;
+display mu_qp_ub >> ampl/solution_raw.txt;
+display mu_qp_lb >> ampl/solution_raw.txt;
+display mu_qn_ub >> ampl/solution_raw.txt;
+display mu_qn_lb >> ampl/solution_raw.txt;
+display P_flow >> ampl/solution_raw.txt;
+display Q_flow >> ampl/solution_raw.txt;
+display P_slack >> ampl/solution_raw.txt;
+display TotalPayment >> ampl/solution_raw.txt;
+
+# ══════════════════════════════════════════════════════
+# PART 4 — Feasibility Verification
+# ══════════════════════════════════════════════════════
+param max_v_viol;
+param max_t_viol;
+param max_kkt_inj;
+param max_kkt_abs;
+param max_compl;
+param max_excl;
+
+let max_v_viol := max {b in BUSES} max(0, max(V_min[b] - V[b], V[b] - V_max[b]));
+let max_t_viol := max {(f,t) in BRANCHES} max(0, sqrt(P_flow[f,t]^2 + Q_flow[f,t]^2) - S_max[f,t]);
+
+let max_kkt_inj := max {i in GENERATORS} abs(lam_inj[i] - 2*cost_a_inj[i]*qp[i] - cost_b_inj[i] - mu_qp_ub[i] + mu_qp_lb[i]);
+let max_kkt_abs := max {i in GENERATORS} abs(lam_abs[i] - 2*cost_a_abs[i]*qn[i] - cost_b_abs[i] - mu_qn_ub[i] + mu_qn_lb[i]);
+
+let max_compl := max {i in GENERATORS} max(
+    mu_qp_ub[i] * (q_inj_max[i] - qp[i]), 
+    max(
+        mu_qp_lb[i] * qp[i], 
+        max(
+            mu_qn_ub[i] * (q_abs_max[i] - qn[i]), 
+            mu_qn_lb[i] * qn[i]
+        )
+    )
+);
+
+let max_excl := max {i in GENERATORS} (qp[i] * qn[i]);
+
+printf "\n======================================================\n";
+printf "FEASIBILITY VERIFICATION (Threshold = 1e-4)\n";
+printf "======================================================\n";
+
+printf "1. Max Voltage Violation:      %.2e  [%s]\n", max_v_viol, if max_v_viol <= 1e-4 then "PASS" else "FAIL";
+printf "2. Max Thermal Violation:      %.2e  [%s]\n", max_t_viol, if max_t_viol <= 1e-4 then "PASS" else "FAIL";
+printf "3. Max KKT Stat (Injection):   %.2e  [%s]\n", max_kkt_inj, if max_kkt_inj <= 1e-4 then "PASS" else "FAIL";
+printf "4. Max KKT Stat (Absorption):  %.2e  [%s]\n", max_kkt_abs, if max_kkt_abs <= 1e-4 then "PASS" else "FAIL";
+printf "5. Max Complementarity Viol:   %.2e  [%s]\n", max_compl, if max_compl <= 1e-4 then "PASS" else "FAIL";
+printf "6. Max Physical Exclusivity:   %.2e  [%s]\n", max_excl, if max_excl <= 1e-4 then "PASS" else "FAIL";
+printf "======================================================\n\n";
