@@ -179,8 +179,8 @@ def verify_kkt_stationarity(solution, network, tol=1e-6):
         cb_abs = network['cost_b_abs'].get(g, 0.0) if isinstance(network.get('cost_b_abs'), dict) else 0.0
         
         # Calculate exactly what AMPL calculated
-        stat_inj[g] = lam_inj/S_base - 2*ca_inj*qp_mvar/S_base - cb_inj/S_base - mu_qp_ub/S_base + mu_qp_lb/S_base
-        stat_abs[g] = lam_abs/S_base - 2*ca_abs*qn_mvar/S_base - cb_abs/S_base - mu_qn_ub/S_base + mu_qn_lb/S_base
+        stat_inj[g] = lam_inj - 2*ca_inj*qp_mvar - cb_inj - mu_qp_ub + mu_qp_lb
+        stat_abs[g] = lam_abs - 2*ca_abs*qn_mvar - cb_abs - mu_qn_ub + mu_qn_lb
         
     max_inj = max((abs(v) for v in stat_inj.values()), default=0.0)
     max_abs = max((abs(v) for v in stat_abs.values()), default=0.0)
@@ -335,7 +335,14 @@ def run_full_verification(solution_raw_path, network_dat_path, tol=1e-4):
     checks_passed = sum([pf_res['pass'], stat_res['pass'], compl_res['pass'], excl_res['pass'], econ_res['pass']])
     total_checks = 5
     
-    if checks_passed == total_checks:
+    with open('ampl/solution_summary.txt', 'r') as f:
+        first_line = f.readline()
+        second_line = f.readline()
+        solve_status = second_line.split(',')[1].strip()
+
+    if solve_status != "solved":
+        quality = "INVALID"
+    elif checks_passed == total_checks:
         quality = "CERTIFIED"
     elif pf_res['pass'] and stat_res['pass'] and compl_res['max_product'] < 1e-3:
         quality = "ACCEPTABLE"

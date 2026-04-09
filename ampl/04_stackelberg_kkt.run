@@ -115,10 +115,8 @@ for {i in GENERATORS} {
         qn[i] * s_base_mva, 
         (qp[i] - qn[i]) * s_base_mva,
         (lam_inj[i]*(qp[i]*s_base_mva) + lam_abs[i]*(qn[i]*s_base_mva))
-        - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva)
-        - cost_c_inj[i]*(qp[i]/(qp[i]+1e-3))
-        - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva)
-        - cost_c_abs[i]*(qn[i]/(qn[i]+1e-3))
+        - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva) - cost_c_inj[i]*(if qp[i]*s_base_mva>0.001 then 1 else 0)
+        - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva) - cost_c_abs[i]*(if qn[i]*s_base_mva>0.001 then 1 else 0)
         >> ampl/solution_summary.txt;
 }
 
@@ -182,11 +180,11 @@ let max_v_viol := max {b in BUSES} max(0, max(V_min[b] - V[b], V[b] - V_max[b]))
 let max_t_viol := max {(f,t) in BRANCHES} max(0, sqrt(P_flow[f,t]^2 + Q_flow[f,t]^2) - S_max[f,t]);
 
 let max_kkt_inj := max {i in GENERATORS} abs(
-    lam_inj[i]/s_base_mva - 2*cost_a_inj[i]*qp[i]
-    - cost_b_inj[i]/s_base_mva - mu_qp_ub[i]/s_base_mva + mu_qp_lb[i]/s_base_mva);
+    lam_inj[i] - 2*cost_a_inj[i]*(qp[i]*s_base_mva)
+    - cost_b_inj[i] - mu_qp_ub[i] + mu_qp_lb[i]);
 let max_kkt_abs := max {i in GENERATORS} abs(
-    lam_abs[i]/s_base_mva - 2*cost_a_abs[i]*qn[i]
-    - cost_b_abs[i]/s_base_mva - mu_qn_ub[i]/s_base_mva + mu_qn_lb[i]/s_base_mva);
+    lam_abs[i] - 2*cost_a_abs[i]*(qn[i]*s_base_mva)
+    - cost_b_abs[i] - mu_qn_ub[i] + mu_qn_lb[i]);
 
 let max_compl := max {i in GENERATORS} max(
     mu_qp_ub[i] * (q_inj_max[i] - qp[i]), 
