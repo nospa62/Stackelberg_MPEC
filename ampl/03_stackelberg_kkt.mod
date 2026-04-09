@@ -247,12 +247,36 @@ subject to KKT_compl_qn_lb {i in GENERATORS}:
     = 0;
 
 # ══════════════════════════════════════════════════════
-# SECTION 14: RELAXED PHYSICAL EXCLUSIVITY
+# SECTION 14: INDIVIDUAL RATIONALITY (IR) CONSTRAINTS
+# Enforces non-negative profit for active generators.
+# cost_c is a fixed activation cost invisible to KKT stationarity
+# (dC/dq = 0), so it must be enforced as a participation constraint.
+# Smooth weight w(q) = q/(q+eps_ir) → 0 as q→0 (idle, cost_c not triggered)
+#                                     → 1 as q grows (active, full cost_c)
+# ══════════════════════════════════════════════════════
+param eps_ir := 1e-3;   # pu threshold (~0.1 MVAr); must match profit formula below
+
+subject to IR_inj {i in GENERATORS}:
+    lam_inj[i] * (qp[i] * s_base_mva)
+    - cost_a_inj[i] * (qp[i] * s_base_mva)^2
+    - cost_b_inj[i] * (qp[i] * s_base_mva)
+    - cost_c_inj[i] * (qp[i] / (qp[i] + eps_ir))
+    >= 0;
+
+subject to IR_abs {i in GENERATORS}:
+    lam_abs[i] * (qn[i] * s_base_mva)
+    - cost_a_abs[i] * (qn[i] * s_base_mva)^2
+    - cost_b_abs[i] * (qn[i] * s_base_mva)
+    - cost_c_abs[i] * (qn[i] / (qn[i] + eps_ir))
+    >= 0;
+
+# ══════════════════════════════════════════════════════
+# SECTION 15: RELAXED PHYSICAL EXCLUSIVITY
 # ══════════════════════════════════════════════════════
 # Prevents simultaneous injection/absorption trapping dynamically
 
 # ══════════════════════════════════════════════════════
-# SECTION 15: AUXILIARY EXPRESSIONS (for output and validation)
+# SECTION 16: AUXILIARY EXPRESSIONS (for output and validation)
 # ══════════════════════════════════════════════════════
 # Define branch flow expressions for reporting — NOT constraints
 # Active power flow from f to t:

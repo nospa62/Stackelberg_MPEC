@@ -179,11 +179,14 @@ def verify_kkt_stationarity(solution, network, tol=1e-6):
         cb_abs = network['cost_b_abs'].get(g, 0.0) if isinstance(network.get('cost_b_abs'), dict) else 0.0
         
         # Calculate exactly what AMPL calculated
-        stat_inj[g] = lam_inj - 2*ca_inj*qp_mvar - cb_inj - mu_qp_ub + mu_qp_lb
-        stat_abs[g] = lam_abs - 2*ca_abs*qn_mvar - cb_abs - mu_qn_ub + mu_qn_lb
+        stat_inj[g] = abs(lam_inj - 2*ca_inj*qp_mvar - cb_inj - mu_qp_ub + mu_qp_lb)
+        stat_abs[g] = abs(lam_abs - 2*ca_abs*qn_mvar - cb_abs - mu_qn_ub + mu_qn_lb)
         
-    max_inj = max((abs(v) for v in stat_inj.values()), default=0.0)
-    max_abs = max((abs(v) for v in stat_abs.values()), default=0.0)
+        print(f"gen {g}: mu_qn_lb={mu_qn_lb:.6g}, lam_abs={lam_abs:.6g}, "
+              f"cb_abs={cb_abs:.6g}, stat_abs={stat_abs[g]:.3e}")
+        
+    max_inj = max((v for v in stat_inj.values()), default=0.0)
+    max_abs = max((v for v in stat_abs.values()), default=0.0)
     
     return {
         'max_stat_inj': max_inj,

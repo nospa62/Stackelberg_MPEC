@@ -39,6 +39,7 @@ FMT_MVAR_MW = '#,##0.000'
 FMT_PU = '0.000000'
 FMT_DEG = '0.0000'
 FMT_PCT = '0.00%'
+FMT_PRICE = '0.000000'
 
 def parse_dat_param(content, param_name, dims=1):
     """Robustly parse parameters from network.dat.
@@ -102,12 +103,18 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
     
     cost_a_inj = parse_dat_param(dat_content, 'cost_a_inj', 1)
     cost_b_inj = parse_dat_param(dat_content, 'cost_b_inj', 1)
+    cost_c_inj = parse_dat_param(dat_content, 'cost_c_inj', 1)
     cost_a_abs = parse_dat_param(dat_content, 'cost_a_abs', 1)
     cost_b_abs = parse_dat_param(dat_content, 'cost_b_abs', 1)
+    cost_c_abs = parse_dat_param(dat_content, 'cost_c_abs', 1)
     q_inj_max = parse_dat_param(dat_content, 'q_inj_max', 1)
     q_abs_max = parse_dat_param(dat_content, 'q_abs_max', 1)
     
     s_base = res['solve_info']['s_base']
+    
+    solve_status = str(res['solve_info']['solve_result']).strip().lower()
+    if solve_status != "solved":
+        print(f"WARNING: solve_result={solve_status}. Report will be marked INVALID.")
 
     wb = Workbook()
     wb.remove(wb.active) # Remove default sheet
@@ -120,6 +127,10 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
     
     ws1['A1'] = "Stackelberg Dual-Price Reactive Power Market — Results"
     ws1['A1'].font = TITLE_FONT
+    
+    consistency_status = "PASS" if not consistency_violations else "FAIL"
+    if solve_status != "solved":
+        consistency_status = "INVALID (solver did not converge)"
     
     summary_data = [
         ("Solve Result", res['solve_info']['solve_result']),
@@ -159,7 +170,11 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
     ws1[f'A{row}'].font = Font(bold=True, size=12)
     row += 1
     
-    if not consistency_violations:
+    if solve_status != "solved":
+        ws1[f'A{row}'] = "Dual Price Consistency"
+        ws1[f'B{row}'] = consistency_status
+        ws1[f'B{row}'].fill = FILL_RED
+    elif not consistency_violations:
         ws1[f'A{row}'] = "Dual Price Consistency"
         ws1[f'B{row}'] = "PASS"
         ws1[f'B{row}'].fill = FILL_GREEN
@@ -199,8 +214,24 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         qnet = r['q_net_mvar']
         profit = r['profit_eur']
         
+        eps_ir = 1e-3
+        qp_pu = qp / s_base
+        qn_pu = qn / s_base
+        w_inj = qp_pu / (qp_pu + eps_ir)
+        w_abs = qn_pu / (qn_pu + eps_ir)
+        
+        gen_key = str(int(float(gen)))
+        ca_inj = cost_a_inj.get(gen_key, 0.0)
+        cb_inj = cost_b_inj.get(gen_key, 0.0)
+        cc_inj = cost_c_inj.get(gen_key, 0.0)
+        ca_abs = cost_a_abs.get(gen_key, 0.0)
+        cb_abs = cost_b_abs.get(gen_key, 0.0)
+        cc_abs = cost_c_abs.get(gen_key, 0.0)
+        
+        cost = (ca_inj*(qp**2) + cb_inj*qp + cc_inj*w_inj
+              + ca_abs*(qn**2) + cb_abs*qn + cc_abs*w_abs)
         revenue = lam_inj * qp + lam_abs * qn
-        cost = revenue - profit
+        profit = revenue - cost
         
         if qp > 1e-3: direction = "INJECTION"
         elif qn > 1e-3: direction = "ABSORPTION"
@@ -214,7 +245,8 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         for col in range(1, len(headers2) + 1):
             cell = ws2.cell(row=current_row, column=col)
             cell.fill = fill
-            if col in [4, 5, 10, 11, 12]: cell.number_format = FMT_CURRENCY
+            if col in [4, 5]: cell.number_format = FMT_PRICE
+            elif col in [10, 11, 12]: cell.number_format = FMT_CURRENCY
             elif col in [6, 7, 8]: cell.number_format = FMT_MVAR_MW
 
     autofit_columns(ws2)
@@ -335,12 +367,12 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         qmax_abs = q_abs_max.get(gen_key, 0.0)
         
         stat_inj = abs(
-            lam_inj/s_base - 2*ca_inj*qp_mvar/s_base - cb_inj/s_base
-            - mu_qp_ub/s_base + mu_qp_lb/s_base
+            lam_inj - 2*ca_inj*qp_mvar - cb_inj
+            - mu_qp_ub + mu_qp_lb
         )
         stat_abs = abs(
-            lam_abs/s_base - 2*ca_abs*qn_mvar/s_base - cb_abs/s_base
-            - mu_qn_ub/s_base + mu_qn_lb/s_base
+            lam_abs - 2*ca_abs*qn_mvar - cb_abs
+            - mu_qn_ub + mu_qn_lb
         )
         
         qmax_inj_mvar = qmax_inj * s_base
@@ -350,6 +382,9 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         compl_qp_lb = abs(mu_qp_lb * qp_mvar)
         compl_qn_ub = abs(mu_qn_ub * (qmax_abs_mvar - qn_mvar))
         compl_qn_lb = abs(mu_qn_lb * qn_mvar)
+        
+        print(f"gen {gen}: mu_qn_lb={mu_qn_lb:.6g}, lam_abs={lam_abs:.6g}, "
+              f"cb_abs={cb_abs:.6g}, stat_abs={stat_abs:.3e}")
         
         excl = abs(qp_mvar * qn_mvar)
         
@@ -417,16 +452,20 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         cb_inj = cost_b_inj.get(gen_key, 0.0)
         cb_abs = cost_b_abs.get(gen_key, 0.0)
         
-        in_deadband = "YES" if (lam_inj <= cb_inj + 1e-4 and lam_abs <= cb_abs + 1e-4) else "NO"
+        inj_db = lam_inj <= cb_inj + 1e-4
+        abs_db = lam_abs <= cb_abs + 1e-4
+        in_deadband = f"INJ={'DB' if inj_db else 'ACTIVE'} / ABS={'DB' if abs_db else 'ACTIVE'}"
         
         ws6.append([gen_key, cb_inj, cb_abs, lam_inj, lam_abs, in_deadband])
         
         current_row = ws6.max_row
-        for col in range(2, 6):
+        for col in range(2, 4):
             ws6.cell(row=current_row, column=col).number_format = FMT_CURRENCY
+        for col in range(4, 6):
+            ws6.cell(row=current_row, column=col).number_format = FMT_PRICE
         
         cell_db = ws6.cell(row=current_row, column=6)
-        cell_db.fill = FILL_GREY if in_deadband == "YES" else FILL_GREEN
+        cell_db.fill = FILL_GREY if "DB" in in_deadband else FILL_GREEN
 
     autofit_columns(ws6)
 
