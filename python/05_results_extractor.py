@@ -250,7 +250,10 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
     
     for _, row in df.iterrows():
         gen_id_val = row['gen_id']
-        gen = str(int(gen_id_val)) if isinstance(gen_id_val, float) and gen_id_val.is_integer() else str(gen_id_val)
+        try:
+            gen = str(int(float(gen_id_val)))
+        except ValueError:
+            gen = str(gen_id_val)
         qp_pu = row['qp_mvar'] / s_base
         qn_pu = row['qn_mvar'] / s_base
         lam_inj = row['lam_inj']

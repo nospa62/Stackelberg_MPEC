@@ -41,19 +41,30 @@ FMT_DEG = '0.0000'
 FMT_PCT = '0.00%'
 
 def parse_dat_param(content, param_name, dims=1):
-    """Robustly parse parameters from network.dat"""
+    """Robustly parse parameters from network.dat.
+    Keys are normalised to plain integer strings ('1', '2', ...)
+    so they match both int and float bus/gen IDs from solution files.
+    """
     pattern = r'param\s+' + param_name + r'(?:\s+default\s+[^:=]+)?\s*:=\s*(.*?);'
     match = re.search(pattern, content, re.DOTALL)
     if not match:
         return {}
     data = {}
     tokens = match.group(1).split()
+
+    def normalise(k):
+        """Convert '1.0', '1', 1 → '1'"""
+        try:
+            return str(int(float(k)))
+        except (ValueError, TypeError):
+            return str(k)
+
     if dims == 1:
-        for i in range(0, len(tokens), 2):
-            data[tokens[i]] = float(tokens[i+1])
+        for i in range(0, len(tokens) - 1, 2):
+            data[normalise(tokens[i])] = float(tokens[i+1])
     elif dims == 2:
-        for i in range(0, len(tokens), 3):
-            data[(tokens[i], tokens[i+1])] = float(tokens[i+2])
+        for i in range(0, len(tokens) - 2, 3):
+            data[(normalise(tokens[i]), normalise(tokens[i+1]))] = float(tokens[i+2])
     return data
 
 def apply_header_style(ws, row=1):
@@ -210,16 +221,16 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
     ws3.freeze_panes = 'A2'
     
     for _, r in res['voltages'].iterrows():
-        bus = str(r['bus_id'])
+        bus_key = str(int(float(r['bus_id'])))
         v_pu = r['V_pu']
         theta = r['theta_deg']
         
-        vmin = v_min.get(bus, 0.9)
-        vmax = v_max.get(bus, 1.1)
+        vmin = v_min.get(bus_key, 0.95)
+        vmax = v_max.get(bus_key, 1.05)
         
         status = "OK" if (vmin - 1e-4) <= v_pu <= (vmax + 1e-4) else "VIOLATION"
         
-        ws3.append([bus, bus, vmin, v_pu, vmax, theta, status])
+        ws3.append([bus_key, bus_key, vmin, v_pu, vmax, theta, status])
         
         current_row = ws3.max_row
         fill = FILL_GREEN if status == "OK" else FILL_RED
@@ -294,8 +305,8 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
 
     for _, r in df_kkt.iterrows():
         gen = str(r['gen_id'])
-        qp_pu = r['qp_mvar'] / s_base
-        qn_pu = r['qn_mvar'] / s_base
+        qp_mvar = r['qp_mvar']
+        qn_mvar = r['qn_mvar']
         lam_inj = r['lam_inj']
         lam_abs = r['lam_abs']
         
@@ -304,22 +315,27 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         mu_qn_ub = r['mu_qn_ub']
         mu_qn_lb = r['mu_qn_lb']
         
-        ca_inj = cost_a_inj.get(gen, 0.0)
-        cb_inj = cost_b_inj.get(gen, 0.0)
-        ca_abs = cost_a_abs.get(gen, 0.0)
-        cb_abs = cost_b_abs.get(gen, 0.0)
-        qmax_inj = q_inj_max.get(gen, 0.0)
-        qmax_abs = q_abs_max.get(gen, 0.0)
+        gen_key = str(int(float(gen)))
         
-        stat_inj = abs(lam_inj - 2*ca_inj*qp_pu - cb_inj - mu_qp_ub + mu_qp_lb)
-        stat_abs = abs(lam_abs - 2*ca_abs*qn_pu - cb_abs - mu_qn_ub + mu_qn_lb)
+        ca_inj = cost_a_inj.get(gen_key, 0.0)
+        cb_inj = cost_b_inj.get(gen_key, 0.0)
+        ca_abs = cost_a_abs.get(gen_key, 0.0)
+        cb_abs = cost_b_abs.get(gen_key, 0.0)
+        qmax_inj = q_inj_max.get(gen_key, 0.0)
+        qmax_abs = q_abs_max.get(gen_key, 0.0)
         
-        compl_qp_ub = abs(mu_qp_ub * (qmax_inj - qp_pu))
-        compl_qp_lb = abs(mu_qp_lb * qp_pu)
-        compl_qn_ub = abs(mu_qn_ub * (qmax_abs - qn_pu))
-        compl_qn_lb = abs(mu_qn_lb * qn_pu)
+        stat_inj = abs(lam_inj - 2*ca_inj*qp_mvar - cb_inj - mu_qp_ub + mu_qp_lb)
+        stat_abs = abs(lam_abs - 2*ca_abs*qn_mvar - cb_abs - mu_qn_ub + mu_qn_lb)
         
-        excl = abs(qp_pu * qn_pu)
+        qmax_inj_mvar = qmax_inj * s_base
+        qmax_abs_mvar = qmax_abs * s_base
+        
+        compl_qp_ub = abs(mu_qp_ub * (qmax_inj_mvar - qp_mvar))
+        compl_qp_lb = abs(mu_qp_lb * qp_mvar)
+        compl_qn_ub = abs(mu_qn_ub * (qmax_abs_mvar - qn_mvar))
+        compl_qn_lb = abs(mu_qn_lb * qn_mvar)
+        
+        excl = abs(qp_mvar * qn_mvar)
         
         max_viol = max(stat_inj, stat_abs, compl_qp_ub, compl_qp_lb, compl_qn_ub, compl_qn_lb, excl)
         if max_viol < 1e-4: overall = "PASS"
@@ -381,12 +397,13 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         lam_inj = r['lam_inj']
         lam_abs = r['lam_abs']
         
-        cb_inj = cost_b_inj.get(gen, 0.0)
-        cb_abs = cost_b_abs.get(gen, 0.0)
+        gen_key = str(int(float(r['gen_id'])))
+        cb_inj = cost_b_inj.get(gen_key, 0.0)
+        cb_abs = cost_b_abs.get(gen_key, 0.0)
         
         in_deadband = "YES" if (lam_inj <= cb_inj + 1e-4 and lam_abs <= cb_abs + 1e-4) else "NO"
         
-        ws6.append([gen, cb_inj, cb_abs, lam_inj, lam_abs, in_deadband])
+        ws6.append([gen_key, cb_inj, cb_abs, lam_inj, lam_abs, in_deadband])
         
         current_row = ws6.max_row
         for col in range(2, 6):

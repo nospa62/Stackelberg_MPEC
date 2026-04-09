@@ -86,7 +86,12 @@ def parse_solution_raw(filepath):
                 parts = line.split()
                 if len(parts) == 2 and not parts[0].startswith('empty'):
                     try:
-                        sol[arr][parts[0]] = float(parts[1])
+                        key = parts[0]
+                        try:
+                            key = str(int(float(key)))
+                        except ValueError:
+                            pass
+                        sol[arr][key] = float(parts[1])
                     except ValueError:
                         pass
     return sol
