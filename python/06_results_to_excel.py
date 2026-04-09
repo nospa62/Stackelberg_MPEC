@@ -15,6 +15,7 @@ except ImportError:
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, NamedStyle
 from openpyxl.utils import get_column_letter
+from openpyxl.comments import Comment
 
 # Import extractor functions
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -249,6 +250,12 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
             elif col in [10, 11, 12]: cell.number_format = FMT_CURRENCY
             elif col in [6, 7, 8]: cell.number_format = FMT_MVAR_MW
 
+        if profit < 0:
+            ws2.cell(row=current_row, column=12).fill = FILL_ORANGE
+            ws2.cell(row=current_row, column=12).comment = Comment(
+                "Negative profit due to fixed cost c_inj. Variable profit is positive — "
+                "generator participates at marginal cost. This is a known MPEC property.", "Model")
+
     autofit_columns(ws2)
 
     # ==========================================
@@ -437,6 +444,10 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
     ws6[f'A{row}'] = "Producer Deadbands"
     ws6[f'A{row}'].font = TITLE_FONT
     row += 1
+    
+    ws6[f'A{row}'] = "NOTE: lam_abs values are Tikhonov artefacts (≈δ_reg). True absorption market price is indeterminate when qn=0."
+    ws6[f'A{row}'].font = Font(italic=True, color="808080")
+    row += 2
     
     headers6 = ["gen_id", "injection_deadband_price (€/MVAr)", "absorption_deadband_price (€/MVAr)", 
                 "actual_lam_inj (€/MVAr)", "actual_lam_abs (€/MVAr)", "in_deadband?"]

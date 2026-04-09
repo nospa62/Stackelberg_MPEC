@@ -254,15 +254,15 @@ subject to KKT_compl_qn_lb {i in GENERATORS}:
 # It is checked in post-processing.
 # ══════════════════════════════════════════════════════
 
-subject to IR_inj {i in GENERATORS}:
-    (lam_inj[i] - cost_b_inj[i]) * (qp[i] * s_base_mva)
-    - cost_a_inj[i] * (qp[i] * s_base_mva)^2
-    >= 0;
+# subject to IR_inj {i in GENERATORS}:
+#     (lam_inj[i] - cost_b_inj[i]) * (qp[i] * s_base_mva)
+#     - cost_a_inj[i] * (qp[i] * s_base_mva)^2
+#     >= 0;
 
-subject to IR_abs {i in GENERATORS}:
-    (lam_abs[i] - cost_b_abs[i]) * (qn[i] * s_base_mva)
-    - cost_a_abs[i] * (qn[i] * s_base_mva)^2
-    >= 0;
+# subject to IR_abs {i in GENERATORS}:
+#     (lam_abs[i] - cost_b_abs[i]) * (qn[i] * s_base_mva)
+#     - cost_a_abs[i] * (qn[i] * s_base_mva)^2
+#     >= 0;
 
 # ══════════════════════════════════════════════════════
 # SECTION 15: RELAXED PHYSICAL EXCLUSIVITY
