@@ -7,7 +7,7 @@
 # - Price units: if prices in .dat are in €/MVAr (not pu), report them directly.
 #                if prices are in pu, convert: price_eur_mvar = price_pu * s_base_mva.
 # - Q conversion: qp[i] and qn[i] are in pu. Multiply by s_base_mva for MVAr display.
-# - P_slack is in pu. Multiply by s_base_mva for MW display.
+# - P_ref is in pu. Multiply by s_base_mva for MW display.
 # ==============================================================================
 
 # ══════════════════════════════════════════════════════
@@ -163,7 +163,7 @@ display mu_qn_ub >> ampl/solution_raw.txt;
 display mu_qn_lb >> ampl/solution_raw.txt;
 display P_flow >> ampl/solution_raw.txt;
 display Q_flow >> ampl/solution_raw.txt;
-display P_slack >> ampl/solution_raw.txt;
+display P_ref >> ampl/solution_raw.txt;
 display TotalPayment >> ampl/solution_raw.txt;
 
 # ══════════════════════════════════════════════════════

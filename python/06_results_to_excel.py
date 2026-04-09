@@ -137,6 +137,16 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         ("Generators Idle", stats['num_generators_idle']),
     ]
     
+    # Extract P_ref from raw_res
+    p_ref_val = None
+    for k, v in raw_res.items():
+        if k.startswith('P_ref['):
+            p_ref_val = v * s_base
+            break
+            
+    if p_ref_val is not None:
+        summary_data.insert(3, ("Reference Bus P_ref (MW)", p_ref_val))
+    
     for i, (k, v) in enumerate(summary_data, start=3):
         ws1[f'A{i}'] = k
         ws1[f'B{i}'] = v

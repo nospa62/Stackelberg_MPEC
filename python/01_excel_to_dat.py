@@ -222,35 +222,17 @@ def process_excel_to_dat(excel_path, dat_path):
         })
         gen_id_counter += 1
         
-    slack_bus_id = None
-    slack_v = 1.0
+    ref_bus_id = None
+    ref_v_init = 1.0
     
     for _, row in extgrids.iterrows():
-        if is_true(row.get('include_in_market', False)):
-            gen_list.append({
-                'gen_id': gen_id_counter,
-                'bus_id': int(row['bus_id']),
-                'p_mw': 0.0, # Will be determined by slack
-                'vm_pu': float(row['vm_pu']),
-                'min_q_mvar': get_val(row, 'min_q_mvar', -500.0),
-                'max_q_mvar': get_val(row, 'max_q_mvar', 500.0),
-                'cost_a_inj': get_val(row, 'cost_a_inj', 0.0),
-                'cost_b_inj': get_val(row, 'cost_b_inj', 0.0),
-                'cost_c_inj': get_val(row, 'cost_c_inj', 0.0),
-                'cost_a_abs': get_val(row, 'cost_a_abs', 0.0),
-                'cost_b_abs': get_val(row, 'cost_b_abs', 0.0),
-                'cost_c_abs': get_val(row, 'cost_c_abs', 0.0),
-                'q_init_mvar': 0.0,
-                'is_ext': True
-            })
-            gen_id_counter += 1
-        
-        # Slack bus is connected to external grid
-        slack_bus_id = int(row['bus_id'])
-        slack_v = float(row['vm_pu'])
+        if is_true(row.get('in_service', False)):
+            ref_bus_id = int(row['bus_id'])
+            ref_v_init = float(row['vm_pu'])
+            break
 
-    if slack_bus_id is None and len(bus_ids) > 0:
-        slack_bus_id = bus_ids[0] # Fallback
+    if ref_bus_id is None and len(bus_ids) > 0:
+        ref_bus_id = bus_ids[0] # Fallback
 
     # Branch set
     branch_dict = {}
@@ -313,8 +295,8 @@ def process_excel_to_dat(excel_path, dat_path):
         gen_ids = [g['gen_id'] for g in gen_list]
         f.write(f"set GENERATORS := {' '.join(map(str, gen_ids))} ;\n")
         
-        # 4. set SLACK_BUSES
-        f.write(f"set SLACK_BUSES := {slack_bus_id} ;\n")
+        # 4. set REF_BUSES
+        f.write(f"set REF_BUSES := {ref_bus_id} ;\n")
         
         # 5. set BRANCHES
         branch_str = " ".join([f"({br[0]},{br[1]})" for br in branches])
@@ -347,9 +329,6 @@ def process_excel_to_dat(excel_path, dat_path):
                 v_max = 1.05
             f.write(f"{row['bus_id']} {v_max}\n")
         f.write(";\n\n")
-        
-        # 8. param V_slack
-        f.write(f"param V_slack := {slack_v};\n\n")
         
         # 9. param G
         f.write("# --- Y-BUS MATRICES ---\n")
@@ -494,6 +473,8 @@ def process_excel_to_dat(excel_path, dat_path):
                 if g['bus_id'] == b:
                     v_init = g['vm_pu']
                     break
+            if b == ref_bus_id:
+                v_init = ref_v_init
             f.write(f"{b} {v_init:.6f}\n")
         f.write(";\n\n")
         
@@ -510,7 +491,7 @@ def process_excel_to_dat(excel_path, dat_path):
     print(f"Number of branches: {len(branches)}")
     print(f"Number of loads: {len(loads)}")
     print(f"Number of shunts: {len(shunts)}")
-    print(f"Slack bus ID: {slack_bus_id}, Voltage: {slack_v} pu")
+    print(f"Reference bus ID: {ref_bus_id}, Init Voltage: {ref_v_init} pu")
     
     try:
         cond_num = np.linalg.cond(Y_bus)

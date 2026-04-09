@@ -9,7 +9,7 @@ def parse_network_dat(filepath):
         content = f.read()
     
     data = {
-        'BUSES': [], 'GENERATORS': [], 'SLACK_BUSES': [],
+        'BUSES': [], 'GENERATORS': [], 'REF_BUSES': [],
         'S_base': 100.0,
         'G': {}, 'B': {},
         'P_load': {}, 'Q_load': {}, 'Q_shunt': {},
@@ -25,7 +25,7 @@ def parse_network_dat(filepath):
         m = re.search(r'param\s+S_base\s*:=\s*([\d\.]+)', content)
         if m: data['S_base'] = float(m.group(1))
     
-    for set_name in ['BUSES', 'GENERATORS', 'SLACK_BUSES']:
+    for set_name in ['BUSES', 'GENERATORS', 'REF_BUSES']:
         m = re.search(r'set\s+' + set_name + r'\s*:=\s*(.*?);', content, re.DOTALL)
         if m:
             data[set_name] = m.group(1).split()
@@ -72,11 +72,11 @@ def parse_solution_raw(filepath):
         'V': {}, 'theta': {}, 'qp': {}, 'qn': {},
         'lam_inj': {}, 'lam_abs': {},
         'mu_qp_ub': {}, 'mu_qp_lb': {}, 'mu_qn_ub': {}, 'mu_qn_lb': {},
-        'P_slack': {}
+        'P_ref': {}
     }
     
     arrays = ['V', 'theta', 'qp', 'qn', 'lam_inj', 'lam_abs', 
-              'mu_qp_ub', 'mu_qp_lb', 'mu_qn_ub', 'mu_qn_lb', 'P_slack']
+              'mu_qp_ub', 'mu_qp_lb', 'mu_qn_ub', 'mu_qn_lb', 'P_ref']
               
     for arr in arrays:
         pattern = r'(?:' + arr + r'\s*\[\*\]\s*:=\s*|' + arr + r'\s*=\s*)(.*?);'
@@ -105,8 +105,8 @@ def verify_ac_power_flow(solution, network, tol=1e-4):
         p_gen_pu = sum(network['P_gen_fixed'].get(g, 0.0) for g in network['GENERATORS'] if network['gen_bus'].get(g) == b)
         q_gen_pu = sum(solution['qp'].get(g, 0.0) - solution['qn'].get(g, 0.0) for g in network['GENERATORS'] if network['gen_bus'].get(g) == b)
         
-        if b in network['SLACK_BUSES']:
-            p_gen_pu += solution['P_slack'].get(b, 0.0)
+        if b in network['REF_BUSES']:
+            p_gen_pu += solution['P_ref'].get(b, 0.0)
             
         p_load_pu = network['P_load'].get(b, 0.0)
         q_load_pu = network['Q_load'].get(b, 0.0)

@@ -18,7 +18,7 @@
 # ══════════════════════════════════════════════════════
 set BUSES;                    # all network buses
 set GENERATORS;               # market participants (gens + ext grids)
-set SLACK_BUSES within BUSES; # reference bus (single element)
+set REF_BUSES within BUSES;   # reference bus (single element)
 set BRANCHES within BUSES cross BUSES;  # all lines + transformers
 
 # ══════════════════════════════════════════════════════
@@ -47,7 +47,6 @@ param G {BUSES, BUSES} default 0;  # conductance matrix
 param B {BUSES, BUSES} default 0;  # susceptance matrix
 param V_min {BUSES};
 param V_max {BUSES};
-param V_slack;
 param P_load {BUSES} default 0;
 param Q_load {BUSES} default 0;
 param Q_shunt {BUSES} default 0;
@@ -83,7 +82,7 @@ var lam_abs {i in GENERATORS} >= price_floor, <= price_cap;  # absorption price
 # Network state variables
 var V {b in BUSES} >= V_min[b], <= V_max[b];
 var theta {BUSES} >= -3.14159, <= 3.14159;
-var P_slack {SLACK_BUSES} >= -20.0, <= 20.0;    # active power slack (free variable, absorbs active power mismatch)
+var P_ref {REF_BUSES} >= -20.0, <= 20.0;    # active power reference (free variable, absorbs active power mismatch)
 
 # ══════════════════════════════════════════════════════
 # SECTION 6: DECISION VARIABLES — LOWER LEVEL (PRODUCERS, embedded via KKT)
@@ -137,12 +136,12 @@ minimize TotalPayment:
 # ══════════════════════════════════════════════════════
 
 # Active power balance at every bus b
-# Generation (fixed P for generators, free P_slack for slack) minus load = injected into network
+# Generation (fixed P for generators, free P_ref for reference) minus load = injected into network
 subject to P_balance {i in BUSES}:
     # 1. Fixed generation from market participants
     (sum {g in GENERATORS: gen_bus[g] == i} P_gen_fixed[g]) + 
-    # 2. Dynamic generation from the slack bus to cover losses
-    (sum {s in SLACK_BUSES: s == i} P_slack[s]) 
+    # 2. Dynamic generation from the reference bus to cover losses
+    (sum {s in REF_BUSES: s == i} P_ref[s]) 
     # 3. Minus fixed load
     - P_load[i] 
     ==
@@ -163,8 +162,7 @@ subject to Q_balance {b in BUSES}:
         - B[b,j] * cos(theta[b] - theta[j]) );
 
 # Reference bus: fix angle (voltage magnitude is released for economic dispatch)
-subject to slack_angle {b in SLACK_BUSES}: theta[b] = 0;
-subject to slack_voltage {b in SLACK_BUSES}: V[b] = V_slack;
+subject to ref_angle {b in REF_BUSES}: theta[b] = 0;
 
 # ══════════════════════════════════════════════════════
 # SECTION 11: NETWORK INEQUALITY CONSTRAINTS

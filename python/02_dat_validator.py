@@ -84,7 +84,7 @@ def validate_network_dat(dat_path):
     
     buses = set(sets.get('BUSES', []))
     gens = set(sets.get('GENERATORS', []))
-    slack_buses = sets.get('SLACK_BUSES', [])
+    ref_buses = sets.get('REF_BUSES', [])
     branches = sets.get('BRANCHES', [])
     
     # STRUCTURAL CHECKS
@@ -101,10 +101,10 @@ def validate_network_dat(dat_path):
             "All BRANCHES reference valid BUSES.",
             f"Invalid branches found: {invalid_branches}")
             
-    # 3. SLACK_BUSES is a subset of BUSES and has exactly one element.
-    v.check(len(slack_buses) == 1 and slack_buses[0] in buses,
-            "SLACK_BUSES has exactly one valid bus.",
-            f"SLACK_BUSES invalid: {slack_buses}")
+    # 3. REF_BUSES is a subset of BUSES and has exactly one element.
+    v.check(len(ref_buses) == 1 and ref_buses[0] in buses,
+            "REF_BUSES has exactly one valid bus.",
+            f"REF_BUSES invalid: {ref_buses}")
             
     # 4. Every generator in GENERATORS has exactly one entry in gen_bus.
     missing_gens = [g for g in gens if g not in gen_bus]
@@ -128,16 +128,6 @@ def validate_network_dat(dat_path):
             "V_min < V_max for all buses.",
             f"Invalid voltage limits for buses: {invalid_v_limits}")
             
-    # 7. V_slack is within [V_min[slack], V_max[slack]].
-    v_slack = scalars.get('V_slack', 1.0)
-    slack_b = slack_buses[0] if slack_buses else None
-    if slack_b is not None:
-        v.check(v_min.get(slack_b, 0) <= v_slack <= v_max.get(slack_b, 0),
-                "V_slack is within limits.",
-                f"V_slack ({v_slack}) outside limits for slack bus {slack_b}.")
-    else:
-        v.check(False, "", "Cannot check V_slack, no slack bus defined.")
-        
     # 8. q_inj_max[i] > 0 for all generators (can inject).
     q_inj_max = p1d.get('q_inj_max', {})
     invalid_q_inj = [g for g in gens if q_inj_max.get(g, 0) <= 0]
