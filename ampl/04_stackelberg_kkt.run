@@ -72,8 +72,8 @@ for {pass in 1..num_passes} {
             qn[i] * s_base_mva, 
             (qp[i] - qn[i]) * s_base_mva,
             (lam_inj[i]*(qp[i]*s_base_mva) + lam_abs[i]*(qn[i]*s_base_mva)) 
-            - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva) - cost_c_inj[i]*(if qp[i]*s_base_mva>0.001 then 1 else 0)
-            - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva) - cost_c_abs[i]*(if qn[i]*s_base_mva>0.001 then 1 else 0);
+            - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva) - cost_c_inj[i]*(qp[i]/(qp[i]+1e-3))
+            - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva) - cost_c_abs[i]*(qn[i]/(qn[i]+1e-3));
     }
     
     printf "\n--- BUS VOLTAGES ---\n";

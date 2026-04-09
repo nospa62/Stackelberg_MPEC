@@ -248,26 +248,20 @@ subject to KKT_compl_qn_lb {i in GENERATORS}:
 
 # ══════════════════════════════════════════════════════
 # SECTION 14: INDIVIDUAL RATIONALITY (IR) CONSTRAINTS
-# Enforces non-negative profit for active generators.
+# Enforces non-negative variable profit for active generators.
 # cost_c is a fixed activation cost invisible to KKT stationarity
-# (dC/dq = 0), so it must be enforced as a participation constraint.
-# Smooth weight w(q) = q/(q+eps_ir) → 0 as q→0 (idle, cost_c not triggered)
-#                                     → 1 as q grows (active, full cost_c)
+# (dC/dq = 0), so it cannot be enforced in the MPEC without tension.
+# It is checked in post-processing.
 # ══════════════════════════════════════════════════════
-param eps_ir := 1e-3;   # pu threshold (~0.1 MVAr); must match profit formula below
 
 subject to IR_inj {i in GENERATORS}:
-    lam_inj[i] * (qp[i] * s_base_mva)
+    (lam_inj[i] - cost_b_inj[i]) * (qp[i] * s_base_mva)
     - cost_a_inj[i] * (qp[i] * s_base_mva)^2
-    - cost_b_inj[i] * (qp[i] * s_base_mva)
-    - cost_c_inj[i] * (qp[i] / (qp[i] + eps_ir))
     >= 0;
 
 subject to IR_abs {i in GENERATORS}:
-    lam_abs[i] * (qn[i] * s_base_mva)
+    (lam_abs[i] - cost_b_abs[i]) * (qn[i] * s_base_mva)
     - cost_a_abs[i] * (qn[i] * s_base_mva)^2
-    - cost_b_abs[i] * (qn[i] * s_base_mva)
-    - cost_c_abs[i] * (qn[i] / (qn[i] + eps_ir))
     >= 0;
 
 # ══════════════════════════════════════════════════════
