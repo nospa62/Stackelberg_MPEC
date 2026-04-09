@@ -334,8 +334,14 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         qmax_inj = q_inj_max.get(gen_key, 0.0)
         qmax_abs = q_abs_max.get(gen_key, 0.0)
         
-        stat_inj = abs(lam_inj - 2*ca_inj*qp_mvar - cb_inj - mu_qp_ub + mu_qp_lb)
-        stat_abs = abs(lam_abs - 2*ca_abs*qn_mvar - cb_abs - mu_qn_ub + mu_qn_lb)
+        stat_inj = abs(
+            lam_inj/s_base - 2*ca_inj*qp_mvar/s_base - cb_inj/s_base
+            - mu_qp_ub/s_base + mu_qp_lb/s_base
+        )
+        stat_abs = abs(
+            lam_abs/s_base - 2*ca_abs*qn_mvar/s_base - cb_abs/s_base
+            - mu_qn_ub/s_base + mu_qn_lb/s_base
+        )
         
         qmax_inj_mvar = qmax_inj * s_base
         qmax_abs_mvar = qmax_abs * s_base

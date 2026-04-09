@@ -61,10 +61,10 @@ param Q_min_gen {GENERATORS};       # minimum reactive power (negative for absor
 param Q_max_gen {GENERATORS};       # maximum reactive power
 param q_inj_max {GENERATORS} >= 0;  # upper bound for q+ (injection)
 param q_abs_max {GENERATORS} >= 0;  # upper bound for q- (= -Q_min, always positive)
-param cost_a_inj {GENERATORS} > 0;
+param cost_a_inj {GENERATORS} >= 0;
 param cost_b_inj {GENERATORS} >= 0;
 param cost_c_inj {GENERATORS} >= 0;
-param cost_a_abs {GENERATORS} > 0;
+param cost_a_abs {GENERATORS} >= 0;
 param cost_b_abs {GENERATORS} >= 0;
 param cost_c_abs {GENERATORS} >= 0;
 param q_init_inj {GENERATORS};      # warm start values for q+
@@ -82,7 +82,8 @@ var lam_abs {i in GENERATORS} >= price_floor, <= price_cap;  # absorption price
 # Network state variables
 var V {b in BUSES} >= V_min[b], <= V_max[b];
 var theta {BUSES} >= -3.14159, <= 3.14159;
-var P_ref {REF_BUSES} >= -20.0, <= 20.0;    # active power reference (free variable, absorbs active power mismatch)
+var P_ref {REF_BUSES} >= -100.0, <= 100.0;    # active power reference (free variable, absorbs active power mismatch)
+var pi_Q {BUSES} >= 0;    # dual variable of Q_balance at each bus (Q-LMP, €/MVAr or pu)
 
 # ══════════════════════════════════════════════════════
 # SECTION 6: DECISION VARIABLES — LOWER LEVEL (PRODUCERS, embedded via KKT)
@@ -120,9 +121,8 @@ minimize TotalPayment:
         lam_inj[i] * qp[i] * s_base_mva
       + lam_abs[i] * qn[i] * s_base_mva
     )
-    + delta_reg * s_base_mva * sum {i in GENERATORS} (
-        lam_inj[i] * (1 - qp[i] / (q_inj_max[i] + 1e-8))
-      + lam_abs[i] * (1 - qn[i] / (q_abs_max[i] + 1e-8))
+    + delta_reg * sum {i in GENERATORS} (
+        lam_inj[i]^2 + lam_abs[i]^2
     );
 
 # Economic interpretation:
@@ -200,19 +200,19 @@ subject to thermal_limit_tf {(f,t) in BRANCHES}:
 # dL/d(qn) = 0 => lam_abs - 2*cost_a_abs*qn - cost_b_abs - mu_qn_ub + mu_qn_lb = 0
 
 subject to KKT_stationarity_inj {i in GENERATORS}:
-    lam_inj[i]
-    - 2 * cost_a_inj[i] * (qp[i] * s_base_mva)
-    - cost_b_inj[i]
-    - mu_qp_ub[i]
-    + mu_qp_lb[i]
+    lam_inj[i] / s_base_mva
+    - 2 * cost_a_inj[i] * qp[i]
+    - cost_b_inj[i] / s_base_mva
+    - mu_qp_ub[i] / s_base_mva
+    + mu_qp_lb[i] / s_base_mva
     = 0;
 
 subject to KKT_stationarity_abs {i in GENERATORS}:
-    lam_abs[i]
-    - 2 * cost_a_abs[i] * (qn[i] * s_base_mva)
-    - cost_b_abs[i]
-    - mu_qn_ub[i]
-    + mu_qn_lb[i]
+    lam_abs[i] / s_base_mva
+    - 2 * cost_a_abs[i] * qn[i]
+    - cost_b_abs[i] / s_base_mva
+    - mu_qn_ub[i] / s_base_mva
+    + mu_qn_lb[i] / s_base_mva
     = 0;
 
 # ══════════════════════════════════════════════════════
@@ -275,3 +275,52 @@ subject to def_Q_flow {(f,t) in BRANCHES}:
     Q_flow[f,t] =
         -V[f]^2 * B[f,t]
         - V[f]*V[t]*( G[f,t]*sin(theta[f]-theta[t]) - B[f,t]*cos(theta[f]-theta[t]) );
+
+# ══════════════════════════════════════════════════════
+# SECTION 16: INDIVIDUAL RATIONALITY (IR) CONSTRAINTS
+# Guarantees non-negative profit for any active generator.
+# cost_c is a fixed activation cost invisible to KKT stationarity,
+# so it must be enforced here as a participation constraint.
+# The smooth activation weight w(q) = q/(q + eps_ir) approaches:
+#   0 when q≈0 (idle generator, fixed cost not triggered)
+#   1 when q>>eps_ir (active generator, full fixed cost applies)
+# This avoids infeasibility for idle generators while
+# enforcing IR for dispatched generators.
+# ══════════════════════════════════════════════════════
+param eps_ir := 1e-3;   # smoothing threshold in pu (~0.1 MVAr)
+
+subject to IR_inj {i in GENERATORS}:
+    lam_inj[i] * (qp[i] * s_base_mva)
+    - cost_a_inj[i] * (qp[i] * s_base_mva)^2
+    - cost_b_inj[i] * (qp[i] * s_base_mva)
+    - cost_c_inj[i] * (qp[i] / (qp[i] + eps_ir))
+    >= 0;
+
+subject to IR_abs {i in GENERATORS}:
+    lam_abs[i] * (qn[i] * s_base_mva)
+    - cost_a_abs[i] * (qn[i] * s_base_mva)^2
+    - cost_b_abs[i] * (qn[i] * s_base_mva)
+    - cost_c_abs[i] * (qn[i] / (qn[i] + eps_ir))
+    >= 0;
+
+# ══════════════════════════════════════════════════════
+# SECTION 17: Q-LMP PRICE CONSISTENCY
+# The injection price for generator i must equal the
+# network's marginal value of reactive power at its bus.
+# pi_Q[b] is the shadow price of Q_balance[b].
+# Since AMPL NLP does not expose constraint duals directly,
+# we enforce this via the stationarity of the upper-level
+# Lagrangian w.r.t. V[b]: dL/dV[b] = 0.
+# For now, enforce the weaker nodal price consistency:
+# lam_inj[i] >= pi_Q[gen_bus[i]]  (generator cannot be paid less than nodal value)
+# ══════════════════════════════════════════════════════
+
+# Q-LMP definition: pi_Q[b] equals the marginal system payment
+# for one additional MVAr at bus b — approximated here as
+# the minimum injection price among generators at that bus
+subject to qlmp_consistency {i in GENERATORS}:
+    lam_inj[i] >= pi_Q[gen_bus[i]];
+
+# Q-LMP upper bound: MO minimizes, so lam equals nodal value at optimum
+subject to qlmp_tight {i in GENERATORS}:
+    lam_inj[i] <= pi_Q[gen_bus[i]] + delta_reg * s_base_mva;
