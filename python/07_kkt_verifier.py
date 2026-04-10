@@ -202,25 +202,22 @@ def verify_complementarity(solution, network, tol=1e-4):
     max_prod = 0.0
     
     for g in network['GENERATORS']:
-        # qp and qn are in PU. The bounds in network.dat are in MVAr.
-        # We must convert q to MVAr so it matches the q_inj_max bound.
-        qp_mvar = solution['qp'].get(g, 0.0) * S_base
-        qn_mvar = solution['qn'].get(g, 0.0) * S_base
-        
         # DO NOT divide multipliers.
         mu_qp_ub = solution['mu_qp_ub'].get(g, 0.0)
         mu_qp_lb = solution['mu_qp_lb'].get(g, 0.0)
         mu_qn_ub = solution['mu_qn_ub'].get(g, 0.0)
         mu_qn_lb = solution['mu_qn_lb'].get(g, 0.0)
         
-        q_inj_max_mvar = network['q_inj_max'].get(g, 0.0) * S_base
-        q_abs_max_mvar = network['q_abs_max'].get(g, 0.0) * S_base
+        q_inj_max_pu = network['q_inj_max'].get(g, 0.0)
+        q_abs_max_pu = network['q_abs_max'].get(g, 0.0)
+        qp_pu = solution['qp'].get(g, 0.0)
+        qn_pu = solution['qn'].get(g, 0.0)
         
         # Calculate exactly what the KKT bounds define
-        c1 = abs(mu_qp_ub * (q_inj_max_mvar - qp_mvar))
-        c2 = abs(mu_qp_lb * qp_mvar)
-        c3 = abs(mu_qn_ub * (q_abs_max_mvar - qn_mvar))
-        c4 = abs(mu_qn_lb * qn_mvar)
+        c1 = abs(mu_qp_ub * (q_inj_max_pu - qp_pu))
+        c2 = abs(mu_qp_lb * qp_pu)
+        c3 = abs(mu_qn_ub * (q_abs_max_pu - qn_pu))
+        c4 = abs(mu_qn_lb * qn_pu)
         
         c_prods[g] = {'c1': c1, 'c2': c2, 'c3': c3, 'c4': c4}
         max_prod = max(max_prod, c1, c2, c3, c4)

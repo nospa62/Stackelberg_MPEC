@@ -25,9 +25,9 @@ let {i in GENERATORS} qn[i] := q_init_abs[i];
 let {i in GENERATORS} lam_inj[i] := cost_b_inj[i];
 let {i in GENERATORS} lam_abs[i] := cost_b_abs[i];
 let {i in GENERATORS} mu_qp_ub[i] := 0.0;
-let {i in GENERATORS} mu_qp_lb[i] := 1e-4;
+let {i in GENERATORS} mu_qp_lb[i] := 0.0;
 let {i in GENERATORS} mu_qn_ub[i] := 0.0;
-let {i in GENERATORS} mu_qn_lb[i] := 1e-4;
+let {i in GENERATORS} mu_qn_lb[i] := 0.0;
 
 option solver ipopt;
 option ipopt_options 'max_iter=3000 tol=1e-8 acceptable_tol=1e-6 mu_strategy=adaptive nlp_scaling_method=gradient-based bound_push=1e-6 bound_frac=1e-6 print_level=5 file_print_level=5 output_file=ampl/ipopt_log.txt';
@@ -37,58 +37,119 @@ option ipopt_options 'max_iter=3000 tol=1e-8 acceptable_tol=1e-6 mu_strategy=ada
 # ══════════════════════════════════════════════════════
 param num_passes := 4;
 param eps_seq {1..num_passes};
-let eps_seq[1] := 1e-2;
-let eps_seq[2] := 1e-4;
-let eps_seq[3] := 1e-6;
-let eps_seq[4] := 1e-8;
+let eps_seq[1] := smoothing_eps_1;
+let eps_seq[2] := smoothing_eps_2;
+let eps_seq[3] := smoothing_eps_3;
+let eps_seq[4] := smoothing_eps_4;
 
-for {pass in 1..num_passes} {
-    let eps_smooth := eps_seq[pass];
+param best_obj default 1e30;
+param start_scale;
+
+param best_V {BUSES};
+param best_theta {BUSES};
+param best_qp {GENERATORS};
+param best_qn {GENERATORS};
+param best_lam_inj {GENERATORS};
+param best_lam_abs {GENERATORS};
+param best_mu_qp_ub {GENERATORS};
+param best_mu_qp_lb {GENERATORS};
+param best_mu_qn_ub {GENERATORS};
+param best_mu_qn_lb {GENERATORS};
+param best_solve_result symbolic default "infeasible";
+
+for {start in 1..3} {
+    let start_scale := start;
     
-    printf "\n======================================================\n";
-    printf "PASS %d: eps_smooth = %g\n", pass, eps_smooth;
-    printf "======================================================\n";
-    
-    # For pass 1: uses initial values from q_init_inj, q_init_abs, V_init, theta_init (set by 'let' in .mod)
-    # For passes 2 and 3: warm starts from previous solution automatically
-    solve;
-    
-    if solve_result == "infeasible" or solve_result == "failure" then {
-        printf "\nWARNING: Solve failed with status '%s'. Continuing to next pass...\n", solve_result;
+    # Reset variables to initial for this start
+    let {b in BUSES} V[b] := V_init[b];
+    let {b in BUSES} theta[b] := theta_init[b];
+    let {i in GENERATORS} qp[i] := q_init_inj[i];
+    let {i in GENERATORS} qn[i] := q_init_abs[i];
+    let {i in GENERATORS} lam_inj[i] := cost_b_inj[i] * start_scale;
+    let {i in GENERATORS} lam_abs[i] := cost_b_abs[i] * start_scale;
+    let {i in GENERATORS} mu_qp_ub[i] := 0.0;
+    let {i in GENERATORS} mu_qp_lb[i] := 0.0;
+    let {i in GENERATORS} mu_qn_ub[i] := 0.0;
+    let {i in GENERATORS} mu_qn_lb[i] := 0.0;
+
+    for {pass in 1..num_passes} {
+        let eps_smooth := eps_seq[pass];
+        
+        printf "\n======================================================\n";
+        printf "START %d, PASS %d: eps_smooth = %g\n", start, pass, eps_smooth;
+        printf "======================================================\n";
+        
+        # For pass 1: uses initial values from q_init_inj, q_init_abs, V_init, theta_init (set by 'let' in .mod)
+        # For passes 2 and 3: warm starts from previous solution automatically
+        solve;
+        
+        if solve_result == "infeasible" or solve_result == "failure" then {
+            printf "\nWARNING: Solve failed with status '%s'. Continuing to next pass...\n", solve_result;
+        }
+        
+        printf "\n--- SOLVE INFO ---\n";
+        printf "Objective (TotalPayment): %g\n", TotalPayment;
+        printf "Solve Result: %s\n", solve_result;
+        printf "Solve Message: %s\n", solve_message;
+        
+        printf "\n--- GENERATOR DISPATCH & PRICES ---\n";
+        for {i in GENERATORS} {
+            printf "Gen %s: lam_inj=%.4f, lam_abs=%.4f, qp=%.4f MVAr, qn=%.4f MVAr, net_Q=%.4f MVAr, profit=%.4f\n",
+                i, 
+                lam_inj[i], 
+                lam_abs[i], 
+                qp[i] * s_base_mva, 
+                qn[i] * s_base_mva, 
+                (qp[i] - qn[i]) * s_base_mva,
+                (lam_inj[i]*(qp[i]*s_base_mva) + lam_abs[i]*(qn[i]*s_base_mva)) 
+                - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva) - (if qp[i] > 1e-4 then cost_c_inj[i] else 0)
+                - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva) - (if qn[i] > 1e-4 then cost_c_abs[i] else 0);
+        }
+        
+        printf "\n--- BUS VOLTAGES ---\n";
+        for {b in BUSES} {
+            printf "Bus %s: V=%.4f pu, theta=%.4f deg\n", b, V[b], theta[b] * 180 / 3.14159265359;
+        }
+        
+        printf "\n--- BRANCH FLOWS ---\n";
+        for {(f,t) in BRANCHES} {
+            printf "Branch %s->%s: P=%.4f MW, Q=%.4f MVAr, loading=%.2f%%\n",
+                f, t, 
+                P_flow[f,t] * s_base_mva, 
+                Q_flow[f,t] * s_base_mva,
+                sqrt(P_flow[f,t]^2 + Q_flow[f,t]^2) / S_max[f,t] * 100;
+        }
     }
     
-    printf "\n--- SOLVE INFO ---\n";
-    printf "Objective (TotalPayment): %g\n", TotalPayment;
-    printf "Solve Result: %s\n", solve_result;
-    printf "Solve Message: %s\n", solve_message;
-    
-    printf "\n--- GENERATOR DISPATCH & PRICES ---\n";
-    for {i in GENERATORS} {
-        printf "Gen %s: lam_inj=%.4f, lam_abs=%.4f, qp=%.4f MVAr, qn=%.4f MVAr, net_Q=%.4f MVAr, profit=%.4f\n",
-            i, 
-            lam_inj[i], 
-            lam_abs[i], 
-            qp[i] * s_base_mva, 
-            qn[i] * s_base_mva, 
-            (qp[i] - qn[i]) * s_base_mva,
-            (lam_inj[i]*(qp[i]*s_base_mva) + lam_abs[i]*(qn[i]*s_base_mva)) 
-            - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva) - cost_c_inj[i]*(qp[i]/(qp[i]+1e-3))
-            - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva) - cost_c_abs[i]*(qn[i]/(qn[i]+1e-3));
+    if TotalPayment < best_obj and solve_result != "infeasible" then {
+        let best_obj := TotalPayment;
+        let best_solve_result := solve_result;
+        let {b in BUSES} best_V[b] := V[b];
+        let {b in BUSES} best_theta[b] := theta[b];
+        let {i in GENERATORS} best_qp[i] := qp[i];
+        let {i in GENERATORS} best_qn[i] := qn[i];
+        let {i in GENERATORS} best_lam_inj[i] := lam_inj[i];
+        let {i in GENERATORS} best_lam_abs[i] := lam_abs[i];
+        let {i in GENERATORS} best_mu_qp_ub[i] := mu_qp_ub[i];
+        let {i in GENERATORS} best_mu_qp_lb[i] := mu_qp_lb[i];
+        let {i in GENERATORS} best_mu_qn_ub[i] := mu_qn_ub[i];
+        let {i in GENERATORS} best_mu_qn_lb[i] := mu_qn_lb[i];
     }
-    
-    printf "\n--- BUS VOLTAGES ---\n";
-    for {b in BUSES} {
-        printf "Bus %s: V=%.4f pu, theta=%.4f deg\n", b, V[b], theta[b] * 180 / 3.14159265359;
-    }
-    
-    printf "\n--- BRANCH FLOWS ---\n";
-    for {(f,t) in BRANCHES} {
-        printf "Branch %s->%s: P=%.4f MW, Q=%.4f MVAr, loading=%.2f%%\n",
-            f, t, 
-            P_flow[f,t] * s_base_mva, 
-            Q_flow[f,t] * s_base_mva,
-            sqrt(P_flow[f,t]^2 + Q_flow[f,t]^2) / S_max[f,t] * 100;
-    }
+}
+
+if best_obj < 1e29 then {
+    let {b in BUSES} V[b] := best_V[b];
+    let {b in BUSES} theta[b] := best_theta[b];
+    let {i in GENERATORS} qp[i] := best_qp[i];
+    let {i in GENERATORS} qn[i] := best_qn[i];
+    let {i in GENERATORS} lam_inj[i] := best_lam_inj[i];
+    let {i in GENERATORS} lam_abs[i] := best_lam_abs[i];
+    let {i in GENERATORS} mu_qp_ub[i] := best_mu_qp_ub[i];
+    let {i in GENERATORS} mu_qp_lb[i] := best_mu_qp_lb[i];
+    let {i in GENERATORS} mu_qn_ub[i] := best_mu_qn_ub[i];
+    let {i in GENERATORS} mu_qn_lb[i] := best_mu_qn_lb[i];
+    # We also need to update TotalPayment and solve_result for the output
+    # But TotalPayment is a defined variable, so it updates automatically
 }
 
 # ══════════════════════════════════════════════════════
@@ -98,7 +159,7 @@ for {pass in 1..num_passes} {
 # File 1: ampl/solution_summary.txt
 printf "[SOLVE INFO]\n" > ampl/solution_summary.txt;
 printf "objective,solve_result,eps_smooth_final,s_base_mva\n" >> ampl/solution_summary.txt;
-printf "%g,%s,%g,%g\n", TotalPayment, solve_result, eps_smooth, s_base_mva >> ampl/solution_summary.txt;
+printf "%g,%s,%g,%g\n", TotalPayment, best_solve_result, eps_smooth, s_base_mva >> ampl/solution_summary.txt;
 
 printf "\n[PRICES]\n" >> ampl/solution_summary.txt;
 printf "gen_id,lam_inj,lam_abs\n" >> ampl/solution_summary.txt;
@@ -115,8 +176,8 @@ for {i in GENERATORS} {
         qn[i] * s_base_mva, 
         (qp[i] - qn[i]) * s_base_mva,
         (lam_inj[i]*(qp[i]*s_base_mva) + lam_abs[i]*(qn[i]*s_base_mva))
-        - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva) - cost_c_inj[i]*(qp[i]/(qp[i]+1e-3))
-        - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva) - cost_c_abs[i]*(qn[i]/(qn[i]+1e-3))
+        - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva) - (if qp[i] > 1e-4 then cost_c_inj[i] else 0)
+        - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva) - (if qn[i] > 1e-4 then cost_c_abs[i] else 0)
         >> ampl/solution_summary.txt;
 }
 
@@ -187,10 +248,10 @@ let max_kkt_abs := max {i in GENERATORS} abs(
     - cost_b_abs[i] - mu_qn_ub[i] + mu_qn_lb[i]);
 
 let max_compl := max(
-    max {i in GENERATORS} abs(mu_qp_ub[i] * (q_inj_max[i] - qp[i]) * s_base_mva),
-    max {i in GENERATORS} abs(mu_qp_lb[i] * qp[i] * s_base_mva),
-    max {i in GENERATORS} abs(mu_qn_ub[i] * (q_abs_max[i] - qn[i]) * s_base_mva),
-    max {i in GENERATORS} abs(mu_qn_lb[i] * qn[i] * s_base_mva)
+    max {i in GENERATORS} abs(mu_qp_ub[i] * (q_inj_max[i] - qp[i])),
+    max {i in GENERATORS} abs(mu_qp_lb[i] * qp[i]),
+    max {i in GENERATORS} abs(mu_qn_ub[i] * (q_abs_max[i] - qn[i])),
+    max {i in GENERATORS} abs(mu_qn_lb[i] * qn[i])
 );
 
 let max_excl := max {i in GENERATORS} (qp[i] * qn[i]);

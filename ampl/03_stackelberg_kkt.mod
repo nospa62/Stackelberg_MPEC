@@ -36,6 +36,7 @@ param delta_reg default 1e-6; # Tikhonov/FBRS regularization coefficient
 param smoothing_eps_1;
 param smoothing_eps_2;
 param smoothing_eps_3;
+param smoothing_eps_4;
 param ipopt_max_iter;
 param ipopt_tol;
 
@@ -61,10 +62,10 @@ param Q_min_gen {GENERATORS};       # minimum reactive power (negative for absor
 param Q_max_gen {GENERATORS};       # maximum reactive power
 param q_inj_max {GENERATORS} >= 0;  # upper bound for q+ (injection)
 param q_abs_max {GENERATORS} >= 0;  # upper bound for q- (= -Q_min, always positive)
-param cost_a_inj {GENERATORS} >= 0;
+param cost_a_inj {GENERATORS} > 0;
 param cost_b_inj {GENERATORS} >= 0;
 param cost_c_inj {GENERATORS} >= 0;
-param cost_a_abs {GENERATORS} >= 0;
+param cost_a_abs {GENERATORS} > 0;
 param cost_b_abs {GENERATORS} >= 0;
 param cost_c_abs {GENERATORS} >= 0;
 param q_init_inj {GENERATORS};      # warm start values for q+
@@ -228,35 +229,23 @@ subject to KKT_stationarity_abs {i in GENERATORS}:
 
 # Injection upper bound: mu_qp_ub * (q_inj_max - qp) = 0
 subject to KKT_compl_qp_ub {i in GENERATORS}:
-    mu_qp_ub[i] + (q_inj_max[i] - qp[i]) * s_base_mva
-    - sqrt( mu_qp_ub[i]^2
-          + ((q_inj_max[i] - qp[i]) * s_base_mva)^2
-          + eps_smooth^2 )
-    = 0;
+    mu_qp_ub[i] + (q_inj_max[i] - qp[i])
+    - sqrt(mu_qp_ub[i]^2 + (q_inj_max[i] - qp[i])^2 + eps_smooth^2) = 0;
 
 # Injection lower bound: mu_qp_lb * qp = 0
 subject to KKT_compl_qp_lb {i in GENERATORS}:
-    mu_qp_lb[i] + qp[i] * s_base_mva
-    - sqrt( mu_qp_lb[i]^2
-          + (qp[i] * s_base_mva)^2
-          + eps_smooth^2 )
-    = 0;
+    mu_qp_lb[i] + qp[i]
+    - sqrt(mu_qp_lb[i]^2 + qp[i]^2 + eps_smooth^2) = 0;
 
 # Absorption upper bound: mu_qn_ub * (q_abs_max - qn) = 0
 subject to KKT_compl_qn_ub {i in GENERATORS}:
-    mu_qn_ub[i] + (q_abs_max[i] - qn[i]) * s_base_mva
-    - sqrt( mu_qn_ub[i]^2
-          + ((q_abs_max[i] - qn[i]) * s_base_mva)^2
-          + eps_smooth^2 )
-    = 0;
+    mu_qn_ub[i] + (q_abs_max[i] - qn[i])
+    - sqrt(mu_qn_ub[i]^2 + (q_abs_max[i] - qn[i])^2 + eps_smooth^2) = 0;
 
 # Absorption lower bound: mu_qn_lb * qn = 0
 subject to KKT_compl_qn_lb {i in GENERATORS}:
-    mu_qn_lb[i] + qn[i] * s_base_mva
-    - sqrt( mu_qn_lb[i]^2
-          + (qn[i] * s_base_mva)^2
-          + eps_smooth^2 )
-    = 0;
+    mu_qn_lb[i] + qn[i]
+    - sqrt(mu_qn_lb[i]^2 + qn[i]^2 + eps_smooth^2) = 0;
 
 # ══════════════════════════════════════════════════════
 # SECTION 14: IR constraints removed — cost_c is a fixed cost invisible to

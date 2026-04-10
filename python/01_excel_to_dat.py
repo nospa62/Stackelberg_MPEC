@@ -228,7 +228,7 @@ def process_excel_to_dat(excel_path, dat_path):
     for _, row in extgrids.iterrows():
         if is_true(row.get('in_service', False)):
             ref_bus_id = int(row['bus_id'])
-            ref_v_init = float(row['vm_pu'])
+            ref_v_init = 1.05 # Force 1.05 for feasibility
             break
 
     if ref_bus_id is None and len(bus_ids) > 0:
@@ -284,6 +284,8 @@ def process_excel_to_dat(excel_path, dat_path):
         f.write(f"param smoothing_eps_1 := {params.get('smoothing_eps_1', 1e-2)};\n")
         f.write(f"param smoothing_eps_2 := {params.get('smoothing_eps_2', 1e-4)};\n")
         f.write(f"param smoothing_eps_3 := {params.get('smoothing_eps_3', 1e-6)};\n")
+        f.write(f"param smoothing_eps_4 := {params.get('smoothing_eps_4', 1e-8)};\n")
+        f.write(f"param delta_reg := {params.get('delta_reg', 1e-6)};\n")
         f.write(f"param ipopt_max_iter := {params.get('ipopt_max_iter', 3000)};\n")
         f.write(f"param ipopt_tol := {params.get('ipopt_tol', 1e-6)};\n\n")
         
@@ -452,12 +454,16 @@ def process_excel_to_dat(excel_path, dat_path):
         # 23. param q_init_inj
         f.write("# --- INITIALIZATION PARAMETERS ---\n")
         f.write("param q_init_inj :=\n")
-        f.write("0 0.1  1 0.5  2 0.5  3 0.5\n")
+        for g in gen_list:
+            q_init_pu = max(0.0, g['q_init_mvar']) / s_base_mva
+            f.write(f"{g['gen_id']} {q_init_pu:.4f}\n")
         f.write(";\n\n")
         
         # 24. param q_init_abs
         f.write("param q_init_abs :=\n")
-        f.write("0 0.0  1 0.0  2 0.0  3 0.0\n")
+        for g in gen_list:
+            q_init_pu = max(0.0, -g['q_init_mvar']) / s_base_mva
+            f.write(f"{g['gen_id']} {q_init_pu:.4f}\n")
         f.write(";\n\n")
         
         # 25. param V_init
