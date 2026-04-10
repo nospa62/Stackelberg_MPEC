@@ -452,16 +452,12 @@ def process_excel_to_dat(excel_path, dat_path):
         # 23. param q_init_inj
         f.write("# --- INITIALIZATION PARAMETERS ---\n")
         f.write("param q_init_inj :=\n")
-        for g in gen_list:
-            q_init = g['q_init_mvar'] / s_base_mva
-            f.write(f"{g['gen_id']} {max(0, q_init):.6f}\n")
+        f.write("0 0.1  1 0.5  2 0.5  3 0.5\n")
         f.write(";\n\n")
         
         # 24. param q_init_abs
         f.write("param q_init_abs :=\n")
-        for g in gen_list:
-            q_init = g['q_init_mvar'] / s_base_mva
-            f.write(f"{g['gen_id']} {max(0, -q_init):.6f}\n")
+        f.write("0 0.0  1 0.0  2 0.0  3 0.0\n")
         f.write(";\n\n")
         
         # 25. param V_init

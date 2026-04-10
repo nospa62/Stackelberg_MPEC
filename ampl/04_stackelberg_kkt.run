@@ -20,8 +20,8 @@ data ampl/network.dat;
 # Initialise variables (warm start)
 let {b in BUSES} V[b] := V_init[b];
 let {b in BUSES} theta[b] := theta_init[b];
-let {i in GENERATORS} qp[i] := 0.01;
-let {i in GENERATORS} qn[i] := 0.01;
+let {i in GENERATORS} qp[i] := q_init_inj[i];
+let {i in GENERATORS} qn[i] := q_init_abs[i];
 let {i in GENERATORS} lam_inj[i] := cost_b_inj[i];
 let {i in GENERATORS} lam_abs[i] := cost_b_abs[i];
 let {i in GENERATORS} mu_qp_ub[i] := 0.0;
@@ -186,15 +186,11 @@ let max_kkt_abs := max {i in GENERATORS} abs(
     lam_abs[i] - 2*cost_a_abs[i]*(qn[i]*s_base_mva)
     - cost_b_abs[i] - mu_qn_ub[i] + mu_qn_lb[i]);
 
-let max_compl := max {i in GENERATORS} max(
-    mu_qp_ub[i] * (q_inj_max[i] - qp[i]), 
-    max(
-        mu_qp_lb[i] * qp[i], 
-        max(
-            mu_qn_ub[i] * (q_abs_max[i] - qn[i]), 
-            mu_qn_lb[i] * qn[i]
-        )
-    )
+let max_compl := max(
+    max {i in GENERATORS} abs(mu_qp_ub[i] * (q_inj_max[i] - qp[i]) * s_base_mva),
+    max {i in GENERATORS} abs(mu_qp_lb[i] * qp[i] * s_base_mva),
+    max {i in GENERATORS} abs(mu_qn_ub[i] * (q_abs_max[i] - qn[i]) * s_base_mva),
+    max {i in GENERATORS} abs(mu_qn_lb[i] * qn[i] * s_base_mva)
 );
 
 let max_excl := max {i in GENERATORS} (qp[i] * qn[i]);

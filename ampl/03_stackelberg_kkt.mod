@@ -120,7 +120,7 @@ minimize TotalPayment:
         lam_inj[i] * qp[i] * s_base_mva
       + lam_abs[i] * qn[i] * s_base_mva
     )
-    + delta_reg * sum {i in GENERATORS} (
+    + delta_reg * s_base_mva * sum {i in GENERATORS} (
         lam_inj[i]^2 + lam_abs[i]^2
     );
 
@@ -162,6 +162,10 @@ subject to Q_balance {b in BUSES}:
 
 # Reference bus: fix angle (voltage magnitude is released for economic dispatch)
 subject to ref_angle {b in REF_BUSES}: theta[b] = 0;
+
+# Reference bus: fix voltage magnitude (standard slack bus definition)
+subject to ref_voltage {b in REF_BUSES}:
+    V[b] = V_init[b];
 
 # ══════════════════════════════════════════════════════
 # SECTION 11: NETWORK INEQUALITY CONSTRAINTS
@@ -224,34 +228,40 @@ subject to KKT_stationarity_abs {i in GENERATORS}:
 
 # Injection upper bound: mu_qp_ub * (q_inj_max - qp) = 0
 subject to KKT_compl_qp_ub {i in GENERATORS}:
-    mu_qp_ub[i] + (q_inj_max[i] - qp[i])
-    - sqrt( mu_qp_ub[i]^2 + (q_inj_max[i] - qp[i])^2 + eps_smooth^2 )
+    mu_qp_ub[i] + (q_inj_max[i] - qp[i]) * s_base_mva
+    - sqrt( mu_qp_ub[i]^2
+          + ((q_inj_max[i] - qp[i]) * s_base_mva)^2
+          + eps_smooth^2 )
     = 0;
 
 # Injection lower bound: mu_qp_lb * qp = 0
 subject to KKT_compl_qp_lb {i in GENERATORS}:
-    mu_qp_lb[i] + qp[i]
-    - sqrt( mu_qp_lb[i]^2 + qp[i]^2 + eps_smooth^2 )
+    mu_qp_lb[i] + qp[i] * s_base_mva
+    - sqrt( mu_qp_lb[i]^2
+          + (qp[i] * s_base_mva)^2
+          + eps_smooth^2 )
     = 0;
 
 # Absorption upper bound: mu_qn_ub * (q_abs_max - qn) = 0
 subject to KKT_compl_qn_ub {i in GENERATORS}:
-    mu_qn_ub[i] + (q_abs_max[i] - qn[i])
-    - sqrt( mu_qn_ub[i]^2 + (q_abs_max[i] - qn[i])^2 + eps_smooth^2 )
+    mu_qn_ub[i] + (q_abs_max[i] - qn[i]) * s_base_mva
+    - sqrt( mu_qn_ub[i]^2
+          + ((q_abs_max[i] - qn[i]) * s_base_mva)^2
+          + eps_smooth^2 )
     = 0;
 
 # Absorption lower bound: mu_qn_lb * qn = 0
 subject to KKT_compl_qn_lb {i in GENERATORS}:
-    mu_qn_lb[i] + qn[i]
-    - sqrt( mu_qn_lb[i]^2 + qn[i]^2 + eps_smooth^2 )
+    mu_qn_lb[i] + qn[i] * s_base_mva
+    - sqrt( mu_qn_lb[i]^2
+          + (qn[i] * s_base_mva)^2
+          + eps_smooth^2 )
     = 0;
 
 # ══════════════════════════════════════════════════════
-# SECTION 14: INDIVIDUAL RATIONALITY (IR) CONSTRAINTS
-# Enforces non-negative variable profit for active generators.
-# cost_c is a fixed activation cost invisible to KKT stationarity
-# (dC/dq = 0), so it cannot be enforced in the MPEC without tension.
-# It is checked in post-processing.
+# SECTION 14: IR constraints removed — cost_c is a fixed cost invisible to
+# producer KKT (dC/dq has no c term). IR enforcement conflicts with stationarity.
+# Post-processing in 07_kkt_verifier.py flags generators with negative total profit.
 # ══════════════════════════════════════════════════════
 
 # subject to IR_inj {i in GENERATORS}:
@@ -267,7 +277,14 @@ subject to KKT_compl_qn_lb {i in GENERATORS}:
 # ══════════════════════════════════════════════════════
 # SECTION 15: RELAXED PHYSICAL EXCLUSIVITY
 # ══════════════════════════════════════════════════════
-# Prevents simultaneous injection/absorption trapping dynamically
+# Uses the same FB smoothing form as KKT complementarity.
+# phi_eps(qp, qn) = qp + qn - sqrt(qp^2 + qn^2 + eps_smooth^2) = 0
+# At eps->0 this enforces qp*qn=0, i.e. exactly one is nonzero.
+
+subject to physical_exclusivity {i in GENERATORS}:
+    qp[i] + qn[i]
+    - sqrt( qp[i]^2 + qn[i]^2 + eps_smooth^2 )
+    = 0;
 
 # ══════════════════════════════════════════════════════
 # SECTION 16: AUXILIARY EXPRESSIONS (for output and validation)

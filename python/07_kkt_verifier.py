@@ -343,9 +343,8 @@ def run_full_verification(solution_raw_path, network_dat_path, tol=1e-4):
     total_checks = 5
     
     with open('ampl/solution_summary.txt', 'r') as f:
-        first_line = f.readline()
-        second_line = f.readline()
-        solve_status = second_line.split(',')[1].strip()
+        lines = [ln.strip() for ln in f if ln.strip() and not ln.startswith('[') and not ln.startswith('objective')]
+    solve_status = lines[0].split(',')[1].strip()
 
     if solve_status != "solved":
         quality = "INVALID"
