@@ -217,18 +217,20 @@ def process_excel_to_dat(excel_path, dat_path):
             'cost_a_abs': get_val(row, 'cost_a_abs', 0.0),
             'cost_b_abs': get_val(row, 'cost_b_abs', 0.0),
             'cost_c_abs': get_val(row, 'cost_c_abs', 0.0),
-            'q_init_mvar': get_val(row, 'q_init_mvar', 0.0),
+            'q_init_mvar': get_val(row, 'q_mvar', 0.0),
             'is_ext': False
         })
         gen_id_counter += 1
         
     ref_bus_id = None
     ref_v_init = 1.0
+    ref_theta_init = 0.0
     
     for _, row in extgrids.iterrows():
         if is_true(row.get('in_service', False)):
             ref_bus_id = int(row['bus_id'])
-            ref_v_init = 1.05 # Force 1.05 for feasibility
+            ref_v_init = get_val(row, 'vm_pu', 1.0)
+            ref_theta_init = get_val(row, 'va_degree', 0.0) * np.pi / 180.0
             break
 
     if ref_bus_id is None and len(bus_ids) > 0:
@@ -316,9 +318,6 @@ def process_excel_to_dat(excel_path, dat_path):
         for _, row in buses.iterrows():
             # Safely get value, default to 0.95 if missing
             v_min = get_val(row, 'v_min_pu', 0.95)
-            # Enforce strict 0.95 limit even if Excel has 0.9
-            if v_min < 0.95: 
-                v_min = 0.95
             f.write(f"{row['bus_id']} {v_min}\n")
         f.write(";\n\n")
         
@@ -326,9 +325,6 @@ def process_excel_to_dat(excel_path, dat_path):
         for _, row in buses.iterrows():
             # Safely get value, default to 1.05 if missing
             v_max = get_val(row, 'v_max_pu', 1.05)
-            # Enforce strict 1.05 limit even if Excel has 1.1
-            if v_max > 1.05: 
-                v_max = 1.05
             f.write(f"{row['bus_id']} {v_max}\n")
         f.write(";\n\n")
         
@@ -483,7 +479,10 @@ def process_excel_to_dat(excel_path, dat_path):
         # 26. param theta_init
         f.write("param theta_init :=\n")
         for b in bus_ids:
-            f.write(f"{b} 0.0\n")
+            t_init = 0.0
+            if b == ref_bus_id:
+                t_init = ref_theta_init
+            f.write(f"{b} {t_init:.6f}\n")
         f.write(";\n\n")
 
     # Validation and Summary

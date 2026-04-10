@@ -363,11 +363,12 @@ def run_full_verification(solution_raw_path, network_dat_path, tol=1e-4):
     print("[2] KKT Stationarity")
     print(f"    Max injection residual: {stat_res['max_stat_inj']:.2e} [{'PASS' if stat_res['max_stat_inj'] <= tol else 'FAIL'}]")
     
-    # NOTE: stat_abs residuals ≈ O(eps_smooth) are expected FB artefacts when qn=0.
-    # At eps_smooth=1e-8, mu_qn_lb balances lam_abs - cb_abs exactly only to O(eps).
-    # Threshold for WARN should be max(eps_smooth * 100, 1e-3) not 1e-4.
-    WARN_THRESHOLD = max(1e-3, 100 * 1e-8)
+    # NOTE: stat_abs residuals can be FB artefacts when qn=0, but large residuals 
+    # (> 1e-3) indicate genuine failures (e.g., stale cost parameters).
+    WARN_THRESHOLD = 1e-3
     print(f"    Max absorption residual: {stat_res['max_stat_abs']:.2e} [{'PASS' if stat_res['max_stat_abs'] <= WARN_THRESHOLD else 'FAIL'}]")
+    for g in network['GENERATORS']:
+        print(f"      gen {g}: stat_abs={stat_res['stat_abs'][g]:.3e}, mu_qn_lb={solution['mu_qn_lb'].get(g,0):.3e}")
     
     print("[3] Complementarity (exact)")
     print(f"    Max product: {compl_res['max_product']:.2e} [{'PASS' if compl_res['max_product'] <= tol else 'FAIL'}]")

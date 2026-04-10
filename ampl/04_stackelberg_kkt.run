@@ -121,7 +121,7 @@ for {start in 1..3} {
         }
     }
     
-    if TotalPayment < best_obj and solve_result != "infeasible" then {
+    if TotalPayment < best_obj and (solve_result == "solved" or solve_result == "uncertain") then {
         let best_obj := TotalPayment;
         let best_solve_result := solve_result;
         let {b in BUSES} best_V[b] := V[b];
