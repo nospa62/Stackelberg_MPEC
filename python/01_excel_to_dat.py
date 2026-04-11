@@ -206,6 +206,7 @@ def process_excel_to_dat(excel_path, dat_path):
     for _, row in gens.iterrows():
         gen_list.append({
             'gen_id': gen_id_counter,
+            'name': row.get('name', f'G{gen_id_counter}'),
             'bus_id': int(row['bus_id']),
             'p_mw': get_val(row, 'p_mw', 0.0),
             'vm_pu': float(row['vm_pu']),
@@ -268,14 +269,40 @@ def process_excel_to_dat(excel_path, dat_path):
 
     branches = [(k[0], k[1], v) for k, v in branch_dict.items()]
 
+    # ---- Cost coefficient sanity check ----
+    for g in gen_list:
+        ca = g['cost_a_inj']
+        cb = g['cost_b_inj']
+        qmax = g['max_q_mvar']
+        if ca > 1.0:
+            print(f"WARNING: Gen {g['gen_id']} cost_a_inj={ca} looks too high. "
+                  f"Expected €/MVAr² (typical: 0.001–0.01). Did you enter €/pu²?")
+        if cb > 50.0:
+            print(f"WARNING: Gen {g['gen_id']} cost_b_inj={cb} > 50 €/MVAr. "
+                  f"Typical range: 0.5–5 €/MVAr.")
+        marginal_cost_at_qmax = 2 * ca * qmax + cb
+        if marginal_cost_at_qmax > float(params.get('price_cap', 1000.0)):
+            print(f"WARNING: Gen {g['gen_id']} marginal cost at Q_max "
+                  f"({marginal_cost_at_qmax:.2f} €/MVAr) exceeds price_cap "
+                  f"({params.get('price_cap')} €/MVAr). Generator will never dispatch at Q_max.")
+
     # Write DAT file
     print(f"Writing {dat_path}...")
     os.makedirs(os.path.dirname(dat_path), exist_ok=True)
     
     with open(dat_path, 'w') as f:
-        f.write("# ==========================================\n")
-        f.write("# Auto-generated AMPL Data File\n")
-        f.write("# ==========================================\n\n")
+        f.write("# =================================================================\n")
+        f.write("# SIGN CONVENTION NOTES\n")
+        f.write("# =================================================================\n")
+        f.write("# Q_shunt: CAPACITIVE shunts are POSITIVE (inject Q into the grid).\n")
+        f.write("#          INDUCTIVE shunts (reactors) must be entered as NEGATIVE.\n")
+        f.write("#          Convention matches the Q_balance constraint in the .mod:\n")
+        f.write("#            Q_inj - Q_load + Q_shunt + Q_gen - Q_network = 0\n")
+        f.write("# Q_load:  Always POSITIVE (loads consume Q).\n")
+        f.write("# cost_a:  Units are €/MVAr² (NOT pu). Q in MVAr in cost function.\n")
+        f.write("# cost_b:  Units are €/MVAr.\n")
+        f.write("# cost_c:  Units are € (fixed cost, excluded from KKT stationarity).\n")
+        f.write("# =================================================================\n\n")
         
         # 1. Scalar params
         f.write("# --- SCALAR SYSTEM PARAMETERS ---\n")
@@ -380,6 +407,13 @@ def process_excel_to_dat(excel_path, dat_path):
         
         # 15. param gen_bus
         f.write("# --- GENERATOR PARAMETERS ---\n")
+        f.write("param gen_name :=\n")
+        for g in gen_list:
+            gen_id = g['gen_id']
+            name = g.get('name', f'G{gen_id}')
+            f.write(f"{gen_id} \"{name}\"\n")
+        f.write(";\n\n")
+        
         f.write("param gen_bus :=\n")
         for g in gen_list:
             f.write(f"{g['gen_id']} {g['bus_id']}\n")

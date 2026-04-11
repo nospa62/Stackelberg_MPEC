@@ -96,6 +96,83 @@ def parse_solution_raw(filepath):
                         pass
     return sol
 
+def verify_power_flow_balance(raw_res: dict, net_data: dict, s_base: float,
+                               tol: float = 1e-4) -> list:
+    """
+    Recompute P and Q balance at every bus from raw solution variables.
+    Returns list of (bus_id, 'P'|'Q', residual) tuples where |residual| > tol.
+
+    Uses: V[b], theta[b], G[b,b'], B[b,b'], P_load[b], Q_load[b], Q_shunt[b],
+          P_gen_fixed[b], qp[i], qn[i] from raw_res and net_data.
+    All quantities in pu.
+    """
+    import math
+
+    buses = [int(k) for k in net_data.get('V_min', {}).keys()]
+    V = {b: raw_res.get(f'V[{b}]', 1.0) for b in buses}
+    theta = {b: raw_res.get(f'theta[{b}]', 0.0) for b in buses}
+
+    G = net_data.get('G', {})
+    B = net_data.get('B', {})
+
+    P_load = net_data.get('P_load', {})
+    Q_load = net_data.get('Q_load', {})
+    Q_shunt = net_data.get('Q_shunt', {})
+
+    # Build gen_bus map from net_data
+    gen_bus_map = {}
+    for gen_id, b in net_data.get('gen_bus', {}).items():
+        gen_bus_map[str(int(float(b)))] = gen_id
+
+    def _g(b1, b2):
+        k = (str(int(b1)), str(int(b2)))
+        return G.get(k, G.get((str(b1), str(b2)), 0.0))
+
+    def _b(b1, b2):
+        k = (str(int(b1)), str(int(b2)))
+        return B.get(k, B.get((str(b1), str(b2)), 0.0))
+
+    violations = []
+
+    for b in buses:
+        # Network injection at bus b
+        P_net = sum(
+            V[b] * V[b2] * (
+                _g(b, b2) * math.cos(theta[b] - theta[b2]) +
+                _b(b, b2) * math.sin(theta[b] - theta[b2])
+            ) for b2 in buses
+        )
+        Q_net = sum(
+            V[b] * V[b2] * (
+                _g(b, b2) * math.sin(theta[b] - theta[b2]) -
+                _b(b, b2) * math.cos(theta[b] - theta[b2])
+            ) for b2 in buses
+        )
+
+        p_load = float(P_load.get(str(b), 0.0))
+        q_load = float(Q_load.get(str(b), 0.0))
+        q_sh = float(Q_shunt.get(str(b), 0.0))
+
+        # Generator contribution at this bus
+        p_gen = 0.0
+        q_gen = 0.0
+        if str(b) in gen_bus_map:
+            gid = gen_bus_map[str(b)]
+            p_gen = float(net_data.get('P_gen_fixed', {}).get(str(gid), 0.0))
+            qp = raw_res.get(f'qp[{gid}]', 0.0)
+            qn = raw_res.get(f'qn[{gid}]', 0.0)
+            q_gen = qp - qn
+
+        P_res = P_net - p_gen + p_load
+        Q_res = Q_net - q_gen + q_load - q_sh
+
+        if abs(P_res) > tol:
+            violations.append((b, 'P', P_res))
+        if abs(Q_res) > tol:
+            violations.append((b, 'Q', Q_res))
+
+    return violations
+
 def verify_ac_power_flow(solution, network, tol=1e-4):
     P_mismatch = {}
     Q_mismatch = {}
@@ -330,6 +407,16 @@ def run_full_verification(solution_raw_path, network_dat_path, tol=1e-4):
     solution = parse_solution_raw(solution_raw_path)
     
     pf_res = verify_ac_power_flow(solution, network, tol=tol)
+    
+    # Also run the new power flow balance check
+    pf_violations = verify_power_flow_balance(solution, network, s_base=network.get('s_base_mva', 100.0), tol=tol)
+    if pf_violations:
+        print(f"  [WARN] AC Power Flow Balance Violations found: {len(pf_violations)}")
+        for v in pf_violations[:5]:
+            print(f"    Bus {v[0]} {v[1]} mismatch: {v[2]:.4e}")
+        if len(pf_violations) > 5:
+            print(f"    ... and {len(pf_violations)-5} more.")
+    
     stat_res = verify_kkt_stationarity(solution, network, tol=tol)
     compl_res = verify_complementarity(solution, network, tol=tol)
     excl_res = verify_physical_exclusivity(solution, tol=tol)

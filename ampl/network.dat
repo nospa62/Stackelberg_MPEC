@@ -1,6 +1,15 @@
-# ==========================================
-# Auto-generated AMPL Data File
-# ==========================================
+# =================================================================
+# SIGN CONVENTION NOTES
+# =================================================================
+# Q_shunt: CAPACITIVE shunts are POSITIVE (inject Q into the grid).
+#          INDUCTIVE shunts (reactors) must be entered as NEGATIVE.
+#          Convention matches the Q_balance constraint in the .mod:
+#            Q_inj - Q_load + Q_shunt + Q_gen - Q_network = 0
+# Q_load:  Always POSITIVE (loads consume Q).
+# cost_a:  Units are €/MVAr² (NOT pu). Q in MVAr in cost function.
+# cost_b:  Units are €/MVAr.
+# cost_c:  Units are € (fixed cost, excluded from KKT stationarity).
+# =================================================================
 
 # --- SCALAR SYSTEM PARAMETERS ---
 param s_base_mva := 100.0;
@@ -189,6 +198,13 @@ param S_max :=
 ;
 
 # --- GENERATOR PARAMETERS ---
+param gen_name :=
+0 "Gen_9"
+1 "Gen_10"
+2 "Gen_11"
+3 "Gen_12"
+;
+
 param gen_bus :=
 0 10
 1 11
@@ -253,17 +269,17 @@ param cost_c_inj :=
 ;
 
 param cost_a_abs :=
-0 0.0018
-1 0.0015
-2 0.0025
-3 0.002
+0 0.0012000000000000001
+1 0.00375
+2 0.0027
+3 0.003
 ;
 
 param cost_b_abs :=
-0 1.85
-1 1.15
-2 1.75
-3 1.5
+0 1.0499999999999998
+1 2.7
+2 2.0999999999999996
+3 3.0
 ;
 
 param cost_c_abs :=

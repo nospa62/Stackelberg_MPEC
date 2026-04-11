@@ -30,7 +30,12 @@ param price_cap;
 param price_floor;
 param eps_smooth default 1e-2;             # current FB smoothing value — set in .run file before each solve
 param delta_abs := 1e-6;      # safety term in FB denominator (never set to zero)
-param delta_reg default 1e-6; # Tikhonov/FBRS regularization coefficient
+param delta_reg;
+# REQUIRED: set in network.dat. Tikhonov regularisation weight for the
+# MO objective: prevents degenerate λ=0 solutions in the upper level.
+# Current value: 1e-6. Effect: shifts market prices by at most
+# delta_reg * Q_max ≈ 1e-6 * 5 pu * 100 MVA = 5e-4 €/MVAr (negligible).
+# Increase to 1e-4 only if Ipopt reports singular Hessian at iter 0.
 
 # Additional scalars from network.dat used by .run file
 param smoothing_eps_1;
@@ -57,6 +62,7 @@ param S_max {BRANCHES};
 # SECTION 4: GENERATOR PARAMETERS
 # ══════════════════════════════════════════════════════
 param gen_bus {GENERATORS};         # bus index of each generator
+param gen_name {GENERATORS} symbolic; # name of each generator
 param P_gen_fixed {GENERATORS};     # fixed active power injection [pu]
 param Q_min_gen {GENERATORS};       # minimum reactive power (negative for absorption)
 param Q_max_gen {GENERATORS};       # maximum reactive power
@@ -152,6 +158,8 @@ subject to P_balance {i in BUSES}:
 # Net Q injection from generators (qp[i]-qn[i]) + fixed shunts - load = injected into network
 # CRITICAL: net Q from generator i at bus b = qp[i] - qn[i]
 # qp is injection (positive contribution), qn is absorption (negative contribution)
+# Q_balance: Reactive power nodal balance (AC, pu)
+# Sign: Q_shunt > 0 for capacitors (inject), < 0 for reactors (absorb)
 subject to Q_balance {b in BUSES}:
     ( sum {i in GENERATORS: gen_bus[i] == b} (qp[i] - qn[i]) )
     + Q_shunt[b]

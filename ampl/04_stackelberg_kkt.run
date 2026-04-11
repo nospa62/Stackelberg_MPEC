@@ -17,6 +17,14 @@ reset;
 model ampl/03_stackelberg_kkt.mod;
 data ampl/network.dat;
 
+# Sanity check: ensure delta_reg was loaded (not just a default)
+if delta_reg <= 0 or delta_reg >= 1e-2 then {
+    printf "ERROR: delta_reg=%g is out of safe range [1e-8, 1e-2].\n", delta_reg;
+    printf "Check network.dat — typical value: 1e-6.\n";
+    exit 1;
+}
+printf "delta_reg confirmed: %g\n", delta_reg;
+
 # Initialise variables (warm start)
 let {b in BUSES} V[b] := V_init[b];
 let {b in BUSES} theta[b] := theta_init[b];
@@ -82,6 +90,11 @@ for {start in 1..3} {
         # For pass 1: uses initial values from q_init_inj, q_init_abs, V_init, theta_init (set by 'let' in .mod)
         # For passes 2 and 3: warm starts from previous solution automatically
         solve;
+        
+        printf "Pass %d: obj=%g, eps=%g, max_Tikhonov_effect=%g €/MVAr\n",
+            pass, TotalPayment,
+            eps_smooth,
+            delta_reg * (sum {i in GENERATORS} (qp[i]^2 + qn[i]^2))^0.5 * s_base_mva;
         
         if solve_result == "infeasible" or solve_result == "failure" then {
             printf "\nWARNING: Solve failed with status '%s'. Continuing to next pass...\n", solve_result;

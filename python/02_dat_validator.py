@@ -53,7 +53,7 @@ def parse_dat_file(filepath):
                 
         elif stmt.startswith('param '):
             parts = stmt.split(':=')
-            header = parts[0].replace('param ', '').strip()
+            header = parts[0].replace('param ', '').replace('symbolic', '').strip()
             if len(parts) == 1:
                 continue
             vals_str = parts[1].strip()
@@ -67,9 +67,15 @@ def parse_dat_file(filepath):
                     if not tokens:
                         continue
                     if len(tokens) == 2:
-                        params_1d[header][int(float(tokens[0]))] = float(tokens[1])
+                        try:
+                            params_1d[header][int(float(tokens[0]))] = float(tokens[1])
+                        except ValueError:
+                            params_1d[header][int(float(tokens[0]))] = tokens[1]
                     elif len(tokens) == 3:
-                        params_2d[header][(int(float(tokens[0])), int(float(tokens[1])))] = float(tokens[2])
+                        try:
+                            params_2d[header][(int(float(tokens[0])), int(float(tokens[1])))] = float(tokens[2])
+                        except ValueError:
+                            params_2d[header][(int(float(tokens[0])), int(float(tokens[1])))] = tokens[2]
                         
     return scalars, sets, params_1d, params_2d
 

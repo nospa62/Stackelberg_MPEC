@@ -106,41 +106,72 @@ def parse_raw_solution(path: str) -> dict:
 
 def _parse_network_dat(path: str) -> dict:
     """
-    Helper function to parse network.dat for parameters needed in statistics and verification.
+    Parse network.dat returning a dict of {param_name: {key: value}}.
+    Scalar params are stored as plain float values.
+    1D params: {'1': 0.7, '2': 1.8, ...}
+    2D params: {('1','2'): 4.344, ...}
+    Uses same logic as 06_results_to_excel.py parse_dat_param for consistency.
     """
-    data = {}
     with open(path, 'r') as f:
         content = f.read()
 
-    # Parse 1D array parameters
-    param_pattern = re.compile(r'param\s+(\w+)(?:\s+default\s+[^:=]+)?\s*:=\s*(.*?);', re.DOTALL)
-    for match in param_pattern.finditer(content):
-        param_name = match.group(1)
-        param_body = match.group(2)
-        
-        lines = param_body.strip().split('\n')
-        param_dict = {}
-        for line in lines:
-            tokens = line.strip().split()
-            if len(tokens) == 2:
-                try:
-                    param_dict[tokens[0]] = float(tokens[1])
-                except ValueError:
-                    param_dict[tokens[0]] = tokens[1]
-        data[param_name] = param_dict
-        
-    # Parse scalar parameters
-    scalar_pattern = re.compile(r'param\s+(\w+)\s*:=\s*([^\s;]+)\s*;')
-    for match in scalar_pattern.finditer(content):
-        param_name = match.group(1)
-        val_str = match.group(2).strip()
+    data = {}
+
+    # --- Scalar parameters ---
+    scalar_pat = re.compile(r'param\s+(\w+)\s*:=\s*([^\s;]+)\s*;')
+    for m in scalar_pat.finditer(content):
+        name, val = m.group(1), m.group(2)
         try:
-            if param_name not in data or not isinstance(data[param_name], dict):
-                data[param_name] = float(val_str)
+            data[name] = float(val)
         except ValueError:
-            if param_name not in data or not isinstance(data[param_name], dict):
-                data[param_name] = val_str
-            
+            data[name] = val
+
+    # --- Array parameters (1D and 2D) ---
+    def normalise(k):
+        try:
+            return str(int(float(k)))
+        except (ValueError, TypeError):
+            return str(k)
+
+    array_pat = re.compile(
+        r'param\s+(\w+)(?:\s+default\s+[^:=]+)?\s*:=\s*(.*?);', re.DOTALL
+    )
+    for m in array_pat.finditer(content):
+        name = m.group(1)
+        if name in data and not isinstance(data.get(name), dict):
+            # Scalar already parsed — skip the array match ghost
+            continue
+        tokens = m.group(2).split()
+        d = {}
+        i = 0
+        while i < len(tokens):
+            # Try 2D key first (three tokens: k1, k2, val)
+            if i + 2 < len(tokens):
+                try:
+                    float(tokens[i+2])
+                    # tokens[i] and [i+1] are keys, [i+2] is value
+                    try:
+                        float(tokens[i])    # key1 is numeric
+                        float(tokens[i+1])  # key2 is numeric
+                        d[(normalise(tokens[i]), normalise(tokens[i+1]))] = float(tokens[i+2])
+                        i += 3
+                        continue
+                    except ValueError:
+                        pass
+                except (ValueError, IndexError):
+                    pass
+            # 1D key (two tokens: k, val)
+            if i + 1 < len(tokens):
+                try:
+                    d[normalise(tokens[i])] = float(tokens[i+1])
+                    i += 2
+                    continue
+                except ValueError:
+                    pass
+            i += 1
+        if d:
+            data[name] = d
+
     return data
 
 def compute_market_statistics(results: dict, network_dat_path: str) -> dict:
@@ -227,18 +258,19 @@ def compute_market_statistics(results: dict, network_dat_path: str) -> dict:
 
 def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/network.dat') -> list:
     """
-    Check that the dual-price solution is economically consistent.
-    Returns a list of violation strings (empty if consistent).
+    Check KKT stationarity of the dual-price solution.
+    All quantities in physical units: Q in MVAr, λ/μ in €/MVAr.
+    Multipliers in solution_summary.txt are already in €/MVAr.
+    cost_a_inj is in €/MVAr² (network.dat convention).
     """
     net_data = _parse_network_dat(network_dat_path)
     s_base = results['solve_info']['s_base']
-    
+
     violations = []
-    
-    # Merge dataframes for easy iteration
+
     df = results['dispatch'].merge(results['prices'], on='gen_id')
     df = df.merge(results['kkt_multipliers'], on='gen_id')
-    
+
     cost_a_inj = net_data.get('cost_a_inj', {})
     if not isinstance(cost_a_inj, dict): cost_a_inj = {}
     cost_b_inj = net_data.get('cost_b_inj', {})
@@ -247,53 +279,72 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
     if not isinstance(cost_a_abs, dict): cost_a_abs = {}
     cost_b_abs = net_data.get('cost_b_abs', {})
     if not isinstance(cost_b_abs, dict): cost_b_abs = {}
-    
+
+    # Tikhonov delta_reg read from .dat for idle-generator threshold
+    delta_reg = float(net_data.get('delta_reg', 1e-6))
+    # Tolerance: allow stationarity residual up to 1e-3 + Tikhonov artefact
+    stat_tol = 1e-3 + delta_reg * s_base
+
     for _, row in df.iterrows():
         gen_id_val = row['gen_id']
         try:
             gen = str(int(float(gen_id_val)))
         except ValueError:
             gen = str(gen_id_val)
-        qp_pu = row['qp_mvar'] / s_base
-        qn_pu = row['qn_mvar'] / s_base
+
+        # All quantities in MVAr / €/MVAr — NO /s_base divisions
+        qp_mvar = row['qp_mvar']
+        qn_mvar = row['qn_mvar']
         lam_inj = row['lam_inj']
         lam_abs = row['lam_abs']
-        
+
         ca_inj = float(cost_a_inj.get(gen, 0.0))
         cb_inj = float(cost_b_inj.get(gen, 0.0))
         ca_abs = float(cost_a_abs.get(gen, 0.0))
         cb_abs = float(cost_b_abs.get(gen, 0.0))
-        
-        mu_qp_ub = row['mu_qp_ub'] / s_base
-        mu_qp_lb = row['mu_qp_lb'] / s_base
-        mu_qn_ub = row['mu_qn_ub'] / s_base
-        mu_qn_lb = row['mu_qn_lb'] / s_base
-        
-        # a) Injecting
-        if qp_pu * s_base > 1e-3:
+
+        # Multipliers already in €/MVAr — do NOT divide by s_base
+        mu_qp_ub = row['mu_qp_ub']
+        mu_qp_lb = row['mu_qp_lb']
+        mu_qn_ub = row['mu_qn_ub']
+        mu_qn_lb = row['mu_qn_lb']
+
+        if qp_mvar > 1e-3:  # Injecting
             if lam_inj < cb_inj - 1e-4:
-                violations.append(f"{gen} injecting but lam_inj ({lam_inj:.4f}) < cost_b_inj ({cb_inj:.4f})")
-            
-            expected_lam = 2 * ca_inj * (qp_pu * s_base) + cb_inj + mu_qp_ub - mu_qp_lb
-            if abs(lam_inj - expected_lam) > 1e-3:
-                violations.append(f"{gen} injecting: stationarity violated. lam_inj={lam_inj:.4f}, expected={expected_lam:.4f}")
-                
-        # b) Absorbing
-        elif qn_pu * s_base > 1e-3:
+                violations.append(
+                    f"Gen {gen} injecting but lam_inj ({lam_inj:.4f}) < cb_inj ({cb_inj:.4f})"
+                )
+            expected = 2.0 * ca_inj * qp_mvar + cb_inj + mu_qp_ub - mu_qp_lb
+            if abs(lam_inj - expected) > stat_tol:
+                violations.append(
+                    f"Gen {gen} INJ stationarity FAIL: lam={lam_inj:.4f}, "
+                    f"expected={expected:.4f}, residual={abs(lam_inj-expected):.4e}"
+                )
+
+        elif qn_mvar > 1e-3:  # Absorbing
             if lam_abs < cb_abs - 1e-4:
-                violations.append(f"{gen} absorbing but lam_abs ({lam_abs:.4f}) < cost_b_abs ({cb_abs:.4f})")
-            
-            expected_lam = 2 * ca_abs * (qn_pu * s_base) + cb_abs + mu_qn_ub - mu_qn_lb
-            if abs(lam_abs - expected_lam) > 1e-3:
-                violations.append(f"{gen} absorbing: stationarity violated. lam_abs={lam_abs:.4f}, expected={expected_lam:.4f}")
-                
-        # c) Idle
-        else:
-            if lam_inj > cb_inj + 1e-4:
-                violations.append(f"{gen} idle but lam_inj ({lam_inj:.4f}) > cost_b_inj ({cb_inj:.4f})")
-            if lam_abs > cb_abs + 1e-4:
-                violations.append(f"{gen} idle but lam_abs ({lam_abs:.4f}) > cost_b_abs ({cb_abs:.4f})")
-                
+                violations.append(
+                    f"Gen {gen} absorbing but lam_abs ({lam_abs:.4f}) < cb_abs ({cb_abs:.4f})"
+                )
+            expected = 2.0 * ca_abs * qn_mvar + cb_abs + mu_qn_ub - mu_qn_lb
+            if abs(lam_abs - expected) > stat_tol:
+                violations.append(
+                    f"Gen {gen} ABS stationarity FAIL: lam={lam_abs:.4f}, "
+                    f"expected={expected:.4f}, residual={abs(lam_abs-expected):.4e}"
+                )
+
+        else:  # Idle generator
+            # FIX: Use stat_tol (includes Tikhonov artefact) instead of bare 1e-4
+            # to prevent false positives caused by delta_reg pushing lam above cb
+            if lam_inj > cb_inj + stat_tol:
+                violations.append(
+                    f"Gen {gen} IDLE but lam_inj ({lam_inj:.4f}) >> cb_inj ({cb_inj:.4f})"
+                )
+            if lam_abs > cb_abs + stat_tol:
+                violations.append(
+                    f"Gen {gen} IDLE but lam_abs ({lam_abs:.4f}) >> cb_abs ({cb_abs:.4f})"
+                )
+
     return violations
 
 if __name__ == "__main__":

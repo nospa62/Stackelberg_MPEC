@@ -42,32 +42,15 @@ FMT_DEG = '0.0000'
 FMT_PCT = '0.00%'
 FMT_PRICE = '0.000000'
 
-def parse_dat_param(content, param_name, dims=1):
-    """Robustly parse parameters from network.dat.
-    Keys are normalised to plain integer strings ('1', '2', ...)
-    so they match both int and float bus/gen IDs from solution files.
-    """
-    pattern = r'param\s+' + param_name + r'(?:\s+default\s+[^:=]+)?\s*:=\s*(.*?);'
-    match = re.search(pattern, content, re.DOTALL)
-    if not match:
-        return {}
-    data = {}
-    tokens = match.group(1).split()
-
-    def normalise(k):
-        """Convert '1.0', '1', 1 → '1'"""
-        try:
-            return str(int(float(k)))
-        except (ValueError, TypeError):
-            return str(k)
-
-    if dims == 1:
-        for i in range(0, len(tokens) - 1, 2):
-            data[normalise(tokens[i])] = float(tokens[i+1])
-    elif dims == 2:
-        for i in range(0, len(tokens) - 2, 3):
-            data[(normalise(tokens[i]), normalise(tokens[i+1]))] = float(tokens[i+2])
-    return data
+def _dat(content_or_path, name, dims=1):
+    """Thin adapter: parse one named param from .dat content string."""
+    import tempfile, os
+    # Write content to a temp file so _parse_network_dat can read it
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.dat', delete=False)
+    tmp.write(content_or_path); tmp.close()
+    result = extractor._parse_network_dat(tmp.name)
+    os.unlink(tmp.name)
+    return result.get(name, {})
 
 def apply_header_style(ws, row=1):
     for cell in ws[row]:
@@ -98,18 +81,19 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
     with open(network_dat, 'r') as f:
         dat_content = f.read()
         
-    v_min = parse_dat_param(dat_content, 'V_min', 1)
-    v_max = parse_dat_param(dat_content, 'V_max', 1)
-    s_max = parse_dat_param(dat_content, 'S_max', 2)
+    v_min = _dat(dat_content, 'V_min', 1)
+    v_max = _dat(dat_content, 'V_max', 1)
+    s_max = _dat(dat_content, 'S_max', 2)
     
-    cost_a_inj = parse_dat_param(dat_content, 'cost_a_inj', 1)
-    cost_b_inj = parse_dat_param(dat_content, 'cost_b_inj', 1)
-    cost_c_inj = parse_dat_param(dat_content, 'cost_c_inj', 1)
-    cost_a_abs = parse_dat_param(dat_content, 'cost_a_abs', 1)
-    cost_b_abs = parse_dat_param(dat_content, 'cost_b_abs', 1)
-    cost_c_abs = parse_dat_param(dat_content, 'cost_c_abs', 1)
-    q_inj_max = parse_dat_param(dat_content, 'q_inj_max', 1)
-    q_abs_max = parse_dat_param(dat_content, 'q_abs_max', 1)
+    cost_a_inj = _dat(dat_content, 'cost_a_inj', 1)
+    cost_b_inj = _dat(dat_content, 'cost_b_inj', 1)
+    cost_c_inj = _dat(dat_content, 'cost_c_inj', 1)
+    cost_a_abs = _dat(dat_content, 'cost_a_abs', 1)
+    cost_b_abs = _dat(dat_content, 'cost_b_abs', 1)
+    cost_c_abs = _dat(dat_content, 'cost_c_abs', 1)
+    q_inj_max = _dat(dat_content, 'q_inj_max', 1)
+    q_abs_max = _dat(dat_content, 'q_abs_max', 1)
+    gen_names = _dat(dat_content, 'gen_name', 1)
     
     s_base = res['solve_info']['s_base']
     
@@ -149,15 +133,12 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         ("Generators Idle", stats['num_generators_idle']),
     ]
     
-    # Extract P_ref from raw_res
-    p_ref_val = None
-    for k, v in raw_res.items():
-        if k.startswith('P_ref['):
-            p_ref_val = v * s_base
-            break
-            
-    if p_ref_val is not None:
-        summary_data.insert(3, ("Reference Bus P_ref (MW)", p_ref_val))
+    # Extract ALL P_ref values (one per REF_BUS)
+    p_ref_items = [(k, v * s_base) for k, v in raw_res.items() if k.startswith('P_ref[')]
+    if p_ref_items:
+        for k, v in p_ref_items:
+            bus_label = k.replace('P_ref[', '').replace(']', '')
+            summary_data.insert(3, (f"P_ref Bus {bus_label} (MW)", v))
     
     for i, (k, v) in enumerate(summary_data, start=3):
         ws1[f'A{i}'] = k
@@ -238,7 +219,8 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         elif qn > 1e-3: direction = "ABSORPTION"
         else: direction = "IDLE"
         
-        row_data = [gen, gen, r['bus_id'], lam_inj, lam_abs, qp, qn, qnet, direction, revenue, cost, profit]
+        display_name = gen_names.get(gen, f"G{gen}")
+        row_data = [gen, display_name, r['bus_id'], lam_inj, lam_abs, qp, qn, qnet, direction, revenue, cost, profit]
         ws2.append(row_data)
         
         current_row = ws2.max_row
@@ -390,8 +372,10 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         compl_qn_ub = abs(mu_qn_ub * (qmax_abs_mvar - qn_mvar))
         compl_qn_lb = abs(mu_qn_lb * qn_mvar)
         
-        print(f"gen {gen}: mu_qn_lb={mu_qn_lb:.6g}, lam_abs={lam_abs:.6g}, "
-              f"cb_abs={cb_abs:.6g}, stat_abs={stat_abs:.3e}")
+        DEBUG_KKT = os.environ.get('STACKELBERG_DEBUG', '0') == '1'
+        if DEBUG_KKT:
+            print(f"gen {gen}: mu_qn_lb={mu_qn_lb:.6g}, lam_abs={lam_abs:.6g}, "
+                  f"cb_abs={cb_abs:.6g}, stat_abs={stat_abs:.3e}")
         
         excl = abs(qp_mvar * qn_mvar)
         
@@ -479,6 +463,38 @@ def generate_excel_report(summary_txt, raw_txt, network_dat, output_xlsx):
         cell_db.fill = FILL_GREY if "DB" in in_deadband else FILL_GREEN
 
     autofit_columns(ws6)
+
+    # --- Sheet 7: Voltage Profile Chart ---
+    from openpyxl.chart import BarChart, Reference
+    
+    ws7 = wb.create_sheet("Voltage Profile")
+    ws7.sheet_properties.tabColor = "70AD47"
+    
+    # Write data for chart
+    ws7['A1'] = "Bus ID"; ws7['B1'] = "V (pu)"; ws7['C1'] = "V_min"; ws7['D1'] = "V_max"
+    for i, r in enumerate(res['voltages'].itertuples(), start=2):
+        bus_key = str(int(float(r.bus_id)))
+        ws7[f'A{i}'] = bus_key
+        ws7[f'B{i}'] = r.V_pu
+        ws7[f'C{i}'] = float(v_min.get(bus_key, 0.95))
+        ws7[f'D{i}'] = float(v_max.get(bus_key, 1.05))
+    
+    n_buses = len(res['voltages'])
+    chart = BarChart()
+    chart.type = "col"
+    chart.title = "Voltage Profile"
+    chart.y_axis.title = "V (pu)"
+    chart.x_axis.title = "Bus"
+    chart.y_axis.scaling.min = 0.93
+    chart.y_axis.scaling.max = 1.07
+    
+    data_ref = Reference(ws7, min_col=2, max_col=4, min_row=1, max_row=n_buses + 1)
+    cats = Reference(ws7, min_col=1, min_row=2, max_row=n_buses + 1)
+    chart.add_data(data_ref, titles_from_data=True)
+    chart.set_categories(cats)
+    chart.shape = 4
+    chart.width = 25; chart.height = 15
+    ws7.add_chart(chart, "F2")
 
     # Save workbook
     os.makedirs(os.path.dirname(output_xlsx), exist_ok=True)
