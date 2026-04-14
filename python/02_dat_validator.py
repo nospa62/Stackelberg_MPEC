@@ -177,13 +177,14 @@ def validate_network_dat(dat_path):
             "price_cap > 0 and price_floor == 0.",
             f"Invalid price limits: cap={price_cap}, floor={price_floor}")
             
-    # 14. smoothing_eps_1 > smoothing_eps_2 > smoothing_eps_3 > 0.
+    # 14. smoothing_eps_1 > smoothing_eps_2 > smoothing_eps_3 > smoothing_eps_4 > 0.
     eps1 = scalars.get('smoothing_eps_1', 0)
     eps2 = scalars.get('smoothing_eps_2', 0)
     eps3 = scalars.get('smoothing_eps_3', 0)
-    v.check(eps1 > eps2 > eps3 > 0,
-            "Smoothing epsilons strictly decreasing and positive.",
-            f"Invalid epsilons: {eps1}, {eps2}, {eps3}")
+    eps4 = scalars.get('smoothing_eps_4', 0)
+    v.check(eps1 > eps2 > eps3 > eps4 > 0,
+            f"All 4 smoothing epsilons strictly decreasing and positive.",
+            f"Invalid epsilons: {eps1} > {eps2} > {eps3} > {eps4} > 0 — FAILED.")
             
     # 15. q_init_inj[i] in [0, q_inj_max[i]] for all i.
     q_init_inj = p1d.get('q_init_inj', {})
@@ -243,9 +244,14 @@ def validate_network_dat(dat_path):
     q_load = p1d.get('Q_load', {})
     total_q_load = sum(q_load.get(b, 0) for b in buses)
     
+    s_base_val = scalars.get('s_base_mva', 100.0)
     v.check(total_q_load <= total_q_shunt + total_q_inj_max,
-            f"Reactive power balance feasible (Load: {total_q_load:.2f}, Max Supply: {total_q_shunt + total_q_inj_max:.2f}).",
-            f"Q_load ({total_q_load:.2f}) exceeds max supply ({total_q_shunt + total_q_inj_max:.2f}).", is_warn=True)
+            f"Reactive power balance feasible "
+            f"(Load: {total_q_load * s_base_val:.1f} MVAr, "
+            f"Max Supply: {(total_q_shunt + total_q_inj_max) * s_base_val:.1f} MVAr).",
+            f"Q_load ({total_q_load * s_base_val:.1f} MVAr) exceeds "
+            f"max supply ({(total_q_shunt + total_q_inj_max) * s_base_val:.1f} MVAr).",
+            is_warn=True)
             
     # DUAL-PRICE SPECIFIC CHECKS
     # 21. For each generator, verify that both injection and absorption cost functions are defined.
@@ -293,6 +299,13 @@ def validate_network_dat(dat_path):
     v.check(price_cap > max_b,
             f"price_cap ({price_cap}) > max b_coeff ({max_b}).",
             f"price_cap ({price_cap}) is too low for max b_coeff ({max_b}).")
+            
+    # 24. delta_reg > 0
+    delta_reg = scalars.get('delta_reg', -1.0)
+    v.check(delta_reg > 0,
+            f"delta_reg = {delta_reg} > 0 (Tikhonov regularisation valid).",
+            f"delta_reg = {delta_reg} is not positive. "
+            f"The .run file will abort. Set to 1e-6 in GameParameters.")
             
     # SUMMARY
     print("\n--- VALIDATION REPORT ---")

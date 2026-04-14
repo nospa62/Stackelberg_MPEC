@@ -63,6 +63,13 @@ def parse_network_dat(filepath):
                 
     return data
 
+def normalise_key(k):
+    """Normalise a parameter key: int-like floats → int string, else pass through."""
+    try:
+        return str(int(float(k)))
+    except (ValueError, TypeError):
+        return str(k)  # symbolic ID — return as-is, log a warning
+
 def parse_solution_raw(filepath):
     """Parse solution_raw.txt to extract variable values."""
     with open(filepath, 'r') as f:
@@ -86,11 +93,7 @@ def parse_solution_raw(filepath):
                 parts = line.split()
                 if len(parts) == 2 and not parts[0].startswith('empty'):
                     try:
-                        key = parts[0]
-                        try:
-                            key = str(int(float(key)))
-                        except ValueError:
-                            pass
+                        key = normalise_key(parts[0])
                         sol[arr][key] = float(parts[1])
                     except ValueError:
                         pass
@@ -405,6 +408,13 @@ def run_full_verification(solution_raw_path, network_dat_path, tol=1e-4):
     print("Loading data for verification...")
     network = parse_network_dat(network_dat_path)
     solution = parse_solution_raw(solution_raw_path)
+    
+    # Sanity check: do the parsed generator IDs match the network?
+    sol_gens = set(solution['qp'].keys())
+    net_gens = set(network['GENERATORS'])
+    if sol_gens and net_gens:
+        missing = net_gens - sol_gens
+        assert not missing, f"Generator IDs in solution_raw do not match network.dat! Missing: {missing}"
     
     pf_res = verify_ac_power_flow(solution, network, tol=tol)
     

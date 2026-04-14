@@ -33,7 +33,9 @@ def parse_solution_summary(path: str) -> dict:
                 'objective': float(df['objective'].iloc[0]),
                 'solve_result': str(df['solve_result'].iloc[0]),
                 'eps_final': float(df['eps_smooth_final'].iloc[0]),
-                's_base': float(df['s_base_mva'].iloc[0])
+                's_base': float(df['s_base_mva'].iloc[0]),
+                'procurement_cost_eur': float(df['procurement_cost_eur'].iloc[0]) if 'procurement_cost_eur' in df.columns else float(df['objective'].iloc[0]),
+                'tikhonov_eur': float(df['tikhonov_eur'].iloc[0]) if 'tikhonov_eur' in df.columns else 0.0
             }
         elif header == 'PRICES':
             results['prices'] = df
@@ -181,8 +183,8 @@ def compute_market_statistics(results: dict, network_dat_path: str) -> dict:
     net_data = _parse_network_dat(network_dat_path)
     s_base = results['solve_info']['s_base']
     
-    disp = results['dispatch']
-    prices = results['prices']
+    disp = results['dispatch'].copy()
+    prices = results['prices'].copy()
     
     # Define an economic threshold (e.g., 1e-5 MVAr)
     DISPATCH_THRESHOLD = 1e-5 
@@ -218,10 +220,13 @@ def compute_market_statistics(results: dict, network_dat_path: str) -> dict:
     tot_q_shunt = q_shunt_pu * s_base
     tot_q_load = q_load_pu * s_base
     
-    # Net grid Q losses (Net Injected + Shunts - Load - Absorbed)
-    q_losses = tot_q_inj + tot_q_shunt - tot_q_load - tot_q_abs
+    # Reactive power balance: Injected + Shunts = Load + Absorbed_by_lines + Line_losses
+    # → Line reactive losses = (Injected + Shunts) - (Load + Absorbed_by_generators)
+    q_line_losses = (tot_q_inj + tot_q_shunt) - (tot_q_load + tot_q_abs)
     
     tot_payment = results['solve_info']['objective']
+    procurement_cost = results['solve_info'].get('procurement_cost_eur', tot_payment)
+    tikhonov_cost = results['solve_info'].get('tikhonov_eur', 0.0)
     
     avg_inj_price = (results['prices']['lam_inj'] * disp['qp_mvar']).sum() / tot_q_inj if tot_q_inj > 0 else 0.0
     avg_abs_price = (results['prices']['lam_abs'] * disp['qn_mvar']).sum() / tot_q_abs if tot_q_abs > 0 else 0.0
@@ -245,8 +250,10 @@ def compute_market_statistics(results: dict, network_dat_path: str) -> dict:
         'total_q_absorbed_mvar': tot_q_abs,
         'total_q_shunt_mvar': tot_q_shunt,
         'total_q_load_mvar': tot_q_load,
-        'net_grid_q_losses_mvar': -q_losses,
+        'net_reactive_line_losses_mvar': q_line_losses,
         'total_payment_eur': tot_payment,
+        'procurement_cost_eur': procurement_cost,
+        'tikhonov_eur': tikhonov_cost,
         'average_injection_price_eur_mvar': avg_inj_price,
         'average_absorption_price_eur_mvar': avg_abs_price,
         'num_generators_injecting': int(num_inj),
@@ -265,6 +272,11 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
     """
     net_data = _parse_network_dat(network_dat_path)
     s_base = results['solve_info']['s_base']
+    
+    # Sanity: multipliers should be O(price_cap) not O(price_cap * s_base)
+    kkt_df = results['kkt_multipliers']
+    assert all(abs(row['mu_qp_ub']) < 1e4 for _, row in kkt_df.iterrows()), \
+        "mu_qp_ub values look pu-scaled (>>price_cap). Check C1 fix in .mod."
 
     violations = []
 
@@ -314,11 +326,14 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
                 violations.append(
                     f"Gen {gen} injecting but lam_inj ({lam_inj:.4f}) < cb_inj ({cb_inj:.4f})"
                 )
-            expected = 2.0 * ca_inj * qp_mvar + cb_inj + mu_qp_ub - mu_qp_lb
-            if abs(lam_inj - expected) > stat_tol:
+            # Units: lam [€/MVAr], ca [€/MVAr²], qp_mvar [MVAr], cb [€/MVAr], mu [€/MVAr]
+            # Stationarity: λ = 2·a·Q + b + μ_ub - μ_lb  (all in €/MVAr)
+            expected_inj = 2.0 * ca_inj * qp_mvar + cb_inj + mu_qp_ub - mu_qp_lb
+            residual_inj = abs(lam_inj - expected_inj)
+            if residual_inj > stat_tol:
                 violations.append(
-                    f"Gen {gen} INJ stationarity FAIL: lam={lam_inj:.4f}, "
-                    f"expected={expected:.4f}, residual={abs(lam_inj-expected):.4e}"
+                    f"Gen {gen} INJ stationarity FAIL: lam={lam_inj:.4f} €/MVAr, "
+                    f"expected={expected_inj:.4f} €/MVAr, residual={residual_inj:.4e} €/MVAr"
                 )
 
         elif qn_mvar > 1e-3:  # Absorbing
@@ -326,11 +341,12 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
                 violations.append(
                     f"Gen {gen} absorbing but lam_abs ({lam_abs:.4f}) < cb_abs ({cb_abs:.4f})"
                 )
-            expected = 2.0 * ca_abs * qn_mvar + cb_abs + mu_qn_ub - mu_qn_lb
-            if abs(lam_abs - expected) > stat_tol:
+            expected_abs = 2.0 * ca_abs * qn_mvar + cb_abs + mu_qn_ub - mu_qn_lb
+            residual_abs = abs(lam_abs - expected_abs)
+            if residual_abs > stat_tol:
                 violations.append(
-                    f"Gen {gen} ABS stationarity FAIL: lam={lam_abs:.4f}, "
-                    f"expected={expected:.4f}, residual={abs(lam_abs-expected):.4e}"
+                    f"Gen {gen} ABS stationarity FAIL: lam={lam_abs:.4f} €/MVAr, "
+                    f"expected={expected_abs:.4f} €/MVAr, residual={residual_abs:.4e} €/MVAr"
                 )
 
         else:  # Idle generator

@@ -17,6 +17,33 @@ def is_true(val):
         return val == 1
     return str(val).strip().lower() in ['true', '1', 'yes', 'y']
 
+def dc_powerflow_angles(bus_ids, bus_idx, G, B, gen_list, P_load, ref_bus_id):
+    """Compute DC power flow angles (Bθ = P) for warm-start."""
+    import numpy as np
+    n = len(bus_ids)
+    ref_idx = bus_idx[ref_bus_id]
+    
+    P_net = np.zeros(n)
+    for b in bus_ids:
+        i = bus_idx[b]
+        P_net[i] = sum(g['p_mw']/100 for g in gen_list if g['bus_id'] == b) \
+                   - P_load.get(b, 0.0)
+    
+    # B' matrix (susceptance, drop ref row/col)
+    B_mat = -B.copy()
+    non_ref = [i for i in range(n) if i != ref_idx]
+    Bp = B_mat[np.ix_(non_ref, non_ref)]
+    Pp = P_net[non_ref]
+    
+    try:
+        theta_nr = np.linalg.solve(Bp, Pp)
+        theta = np.zeros(n)
+        theta[non_ref] = theta_nr
+        return {bus_ids[i]: theta[i] for i in range(n)}
+    except np.linalg.LinAlgError:
+        print("WARNING: DC power flow failed — using flat start for theta_init.")
+        return {b: 0.0 for b in bus_ids}
+
 def get_val(row, col, default=0.0):
     """Safely extracts values from Pandas rows, overriding NaNs with defaults."""
     val = row.get(col)
@@ -168,8 +195,14 @@ def process_excel_to_dat(excel_path, dat_path):
         
         Y_bus[i, i] += (g_t / (a**2) + 1j * (b_t / (a**2) + b_m / 2.0)) * parallel
         Y_bus[j, j] += (g_t + 1j * (b_t + b_m / 2.0)) * parallel
-        Y_bus[i, j] -= (g_t / a + 1j * (b_t / a)) * parallel
-        Y_bus[j, i] -= (g_t / a + 1j * (b_t / a)) * parallel
+        # For off-nominal tap k = a·exp(jφ):
+        # Y_ij = -y_t / k*  (conjugate denominator)
+        # Y_ji = -y_t / k
+        y_ij = -(g_t + 1j * b_t) / np.conj(k)
+        y_ji = -(g_t + 1j * b_t) / k
+
+        Y_bus[i, j] += y_ij * parallel
+        Y_bus[j, i] += y_ji * parallel
 
     G = np.real(Y_bus)
     B = np.imag(Y_bus)
@@ -248,7 +281,12 @@ def process_excel_to_dat(excel_path, dat_path):
         if pd.isna(s_max):
             s_max = np.sqrt(3) * float(row['max_i_ka']) * bus_vn[f]
         
-        pair = tuple(sorted((f, t)))
+        # Lines: store as ordered (from_bus, to_bus)
+        pair = (f, t)
+        reverse = (t, f)
+        if reverse in branch_dict and pair not in branch_dict:
+            print(f"WARNING: Line {f}-{t} reverses existing {t}-{f}. "
+                  f"Using separate directed entries.")
         if pair in branch_dict:
             branch_dict[pair] += float(s_max) / s_base_mva
         else:
@@ -261,7 +299,7 @@ def process_excel_to_dat(excel_path, dat_path):
             continue
         s_max = float(row['sn_mva'])
         
-        pair = tuple(sorted((h, l)))
+        pair = (h, l)   # HV bus is always the "from" end
         if pair in branch_dict:
             branch_dict[pair] += s_max / s_base_mva
         else:
@@ -274,9 +312,14 @@ def process_excel_to_dat(excel_path, dat_path):
         ca = g['cost_a_inj']
         cb = g['cost_b_inj']
         qmax = g['max_q_mvar']
-        if ca > 1.0:
+        if ca <= 0:
+            print(f"ERROR: Gen {g['gen_id']} cost_a_inj={ca} <= 0. "
+                  f"Strict convexity (cost_a > 0) is required for KKT validity. "
+                  f"Aborting — fix the Excel input.")
+            sys.exit(1)      # hard abort, not just a warning
+        elif ca > 1.0:
             print(f"WARNING: Gen {g['gen_id']} cost_a_inj={ca} looks too high. "
-                  f"Expected €/MVAr² (typical: 0.001–0.01). Did you enter €/pu²?")
+                  f"Expected €/MVAr² (typical: 0.001–0.01).")
         if cb > 50.0:
             print(f"WARNING: Gen {g['gen_id']} cost_b_inj={cb} > 50 €/MVAr. "
                   f"Typical range: 0.5–5 €/MVAr.")
@@ -285,6 +328,16 @@ def process_excel_to_dat(excel_path, dat_path):
             print(f"WARNING: Gen {g['gen_id']} marginal cost at Q_max "
                   f"({marginal_cost_at_qmax:.2f} €/MVAr) exceeds price_cap "
                   f"({params.get('price_cap')} €/MVAr). Generator will never dispatch at Q_max.")
+        
+        ca_abs = g['cost_a_abs']
+        if ca_abs <= 0:
+            print(f"ERROR: Gen {g['gen_id']} cost_a_abs={ca_abs} <= 0. "
+                  f"Strict convexity (cost_a > 0) is required for KKT validity. "
+                  f"Aborting — fix the Excel input.")
+            sys.exit(1)      # hard abort, not just a warning
+        elif ca_abs > 1.0:
+            print(f"WARNING: Gen {g['gen_id']} cost_a_abs={ca_abs} looks too high. "
+                  f"Expected €/MVAr² (typical: 0.001–0.01).")
 
     # Write DAT file
     print(f"Writing {dat_path}...")
@@ -308,6 +361,7 @@ def process_excel_to_dat(excel_path, dat_path):
         f.write("# --- SCALAR SYSTEM PARAMETERS ---\n")
         f.write(f"param s_base_mva := {s_base_mva};\n")
         f.write(f"param f_hz := {f_hz};\n")
+        f.write(f"param p_ref_max := 2.0;\n")
         f.write(f"param price_cap := {params.get('price_cap', 1000.0)};\n")
         f.write(f"param price_floor := {params.get('price_floor', 0.0)};\n")
         f.write(f"param smoothing_eps_1 := {params.get('smoothing_eps_1', 1e-2)};\n")
@@ -511,12 +565,12 @@ def process_excel_to_dat(excel_path, dat_path):
         f.write(";\n\n")
         
         # 26. param theta_init
+        theta_init_vals = dc_powerflow_angles(
+            bus_ids, bus_idx, G, B, gen_list, P_load, ref_bus_id)
+
         f.write("param theta_init :=\n")
         for b in bus_ids:
-            t_init = 0.0
-            if b == ref_bus_id:
-                t_init = ref_theta_init
-            f.write(f"{b} {t_init:.6f}\n")
+            f.write(f"{b} {theta_init_vals.get(b, 0.0):.6f}\n")
         f.write(";\n\n")
 
     # Validation and Summary

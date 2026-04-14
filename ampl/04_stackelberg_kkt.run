@@ -18,10 +18,14 @@ model ampl/03_stackelberg_kkt.mod;
 data ampl/network.dat;
 
 # Sanity check: ensure delta_reg was loaded (not just a default)
-if delta_reg <= 0 or delta_reg >= 1e-2 then {
-    printf "ERROR: delta_reg=%g is out of safe range [1e-8, 1e-2].\n", delta_reg;
-    printf "Check network.dat — typical value: 1e-6.\n";
+if delta_reg <= 0 or delta_reg > 0.1 then {
+    print "ERROR: delta_reg out of valid range (0, 0.1]. " &
+          "Typical values: 1e-6 (default), 1e-4 (singular Hessian), 1e-3 (ill-conditioned).";
     exit 1;
+}
+if delta_reg >= 1e-2 then {
+    print "WARNING: delta_reg = " & delta_reg & " is large. " &
+          "Prices may be significantly distorted from true optimal.";
 }
 printf "delta_reg confirmed: %g\n", delta_reg;
 
@@ -64,6 +68,7 @@ param best_mu_qp_lb {GENERATORS};
 param best_mu_qn_ub {GENERATORS};
 param best_mu_qn_lb {GENERATORS};
 param best_solve_result symbolic default "infeasible";
+param best_solve_message symbolic default "";
 
 for {start in 1..3} {
     let start_scale := start;
@@ -115,8 +120,8 @@ for {start in 1..3} {
                 qn[i] * s_base_mva, 
                 (qp[i] - qn[i]) * s_base_mva,
                 (lam_inj[i]*(qp[i]*s_base_mva) + lam_abs[i]*(qn[i]*s_base_mva)) 
-                - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva) - (if qp[i] > 1e-4 then cost_c_inj[i] else 0)
-                - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva) - (if qn[i] > 1e-4 then cost_c_abs[i] else 0);
+                - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva)
+                - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva);
         }
         
         printf "\n--- BUS VOLTAGES ---\n";
@@ -137,6 +142,7 @@ for {start in 1..3} {
     if TotalPayment < best_obj and (solve_result == "solved" or solve_result == "uncertain") then {
         let best_obj := TotalPayment;
         let best_solve_result := solve_result;
+        let best_solve_message := solve_message;
         let {b in BUSES} best_V[b] := V[b];
         let {b in BUSES} best_theta[b] := theta[b];
         let {i in GENERATORS} best_qp[i] := qp[i];
@@ -165,14 +171,24 @@ if best_obj < 1e29 then {
     # But TotalPayment is a defined variable, so it updates automatically
 }
 
+print "Best solve message: " & best_solve_message;
+
 # ══════════════════════════════════════════════════════
 # PART 3 — Write Solution Output Files
 # ══════════════════════════════════════════════════════
 
 # File 1: ampl/solution_summary.txt
+param TikhPayment;
+let TikhPayment :=
+    delta_reg * s_base_mva *
+    sum {i in GENERATORS} (lam_inj[i]^2 + lam_abs[i]^2);
+
+param ProcurementCost;
+let ProcurementCost := TotalPayment - TikhPayment;
+
 printf "[SOLVE INFO]\n" > ampl/solution_summary.txt;
-printf "objective,solve_result,eps_smooth_final,s_base_mva\n" >> ampl/solution_summary.txt;
-printf "%g,%s,%g,%g\n", TotalPayment, best_solve_result, eps_smooth, s_base_mva >> ampl/solution_summary.txt;
+printf "objective,solve_result,eps_smooth_final,s_base_mva,procurement_cost_eur,tikhonov_eur\n" >> ampl/solution_summary.txt;
+printf "%.6f,%s,%.2e,%.1f,%.6f,%.8f\n", TotalPayment, best_solve_result, eps_smooth, s_base_mva, ProcurementCost, TikhPayment >> ampl/solution_summary.txt;
 
 printf "\n[PRICES]\n" >> ampl/solution_summary.txt;
 printf "gen_id,lam_inj,lam_abs\n" >> ampl/solution_summary.txt;
@@ -189,8 +205,8 @@ for {i in GENERATORS} {
         qn[i] * s_base_mva, 
         (qp[i] - qn[i]) * s_base_mva,
         (lam_inj[i]*(qp[i]*s_base_mva) + lam_abs[i]*(qn[i]*s_base_mva))
-        - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva) - (if qp[i] > 1e-4 then cost_c_inj[i] else 0)
-        - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva) - (if qn[i] > 1e-4 then cost_c_abs[i] else 0)
+        - cost_a_inj[i]*(qp[i]*s_base_mva)^2 - cost_b_inj[i]*(qp[i]*s_base_mva)
+        - cost_a_abs[i]*(qn[i]*s_base_mva)^2 - cost_b_abs[i]*(qn[i]*s_base_mva)
         >> ampl/solution_summary.txt;
 }
 
