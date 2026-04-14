@@ -70,16 +70,26 @@ param best_mu_qn_lb {GENERATORS};
 param best_solve_result symbolic default "infeasible";
 param best_solve_message symbolic default "";
 
-for {start in 1..3} {
+for {start in 1..4} {
     let start_scale := start;
     
     # Reset variables to initial for this start
     let {b in BUSES} V[b] := V_init[b];
     let {b in BUSES} theta[b] := theta_init[b];
-    let {i in GENERATORS} qp[i] := q_init_inj[i];
-    let {i in GENERATORS} qn[i] := q_init_abs[i];
-    let {i in GENERATORS} lam_inj[i] := cost_b_inj[i] * start_scale;
-    let {i in GENERATORS} lam_abs[i] := cost_b_abs[i] * start_scale;
+    
+    if start == 4 then {
+        # Absorption-biased warm start
+        let {i in GENERATORS} qp[i] := 0.001;
+        let {i in GENERATORS} qn[i] := q_abs_max[i] * 0.3;
+        let {i in GENERATORS} lam_inj[i] := price_floor + 0.001;
+        let {i in GENERATORS} lam_abs[i] := cost_b_abs[i];
+    } else {
+        let {i in GENERATORS} qp[i] := q_init_inj[i];
+        let {i in GENERATORS} qn[i] := q_init_abs[i];
+        let {i in GENERATORS} lam_inj[i] := cost_b_inj[i] * start_scale;
+        let {i in GENERATORS} lam_abs[i] := cost_b_abs[i] * start_scale;
+    }
+    
     let {i in GENERATORS} mu_qp_ub[i] := 0.0;
     let {i in GENERATORS} mu_qp_lb[i] := 0.0;
     let {i in GENERATORS} mu_qn_ub[i] := 0.0;
@@ -283,7 +293,7 @@ let max_compl := max(
     max {i in GENERATORS} abs(mu_qn_lb[i] * qn[i])
 );
 
-let max_excl := max {i in GENERATORS} (qp[i] * qn[i]);
+let max_excl := max {i in GENERATORS} (qp[i] * s_base_mva * qn[i] * s_base_mva);
 
 printf "\n======================================================\n";
 printf "FEASIBILITY VERIFICATION (Threshold = 1e-4)\n";

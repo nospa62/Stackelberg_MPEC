@@ -130,9 +130,8 @@ minimize TotalPayment:
         lam_inj[i] * qp[i] * s_base_mva
       + lam_abs[i] * qn[i] * s_base_mva
     )
-    + delta_reg * s_base_mva * sum {i in GENERATORS} (
-        lam_inj[i]^2 + lam_abs[i]^2
-    );
+    # Tikhonov on injection prices only — do NOT penalise absorption prices
+    + delta_reg * s_base_mva * sum {i in GENERATORS} lam_inj[i]^2;
 
 # Economic interpretation:
 # - lam_inj[i]*qp[i]: payment to producer i for reactive injection
@@ -269,13 +268,13 @@ subject to KKT_compl_qn_lb {i in GENERATORS}:
 # If any cost_c > 0, comment these out — they conflict with KKT stationarity.
 # =============================================================================
 
-subject to IR_inj {i in GENERATORS}:
-    (lam_inj[i] - cost_b_inj[i]) * (qp[i] * s_base_mva)
-    - cost_a_inj[i] * (qp[i] * s_base_mva)^2 >= 0;
+# subject to IR_inj {i in GENERATORS}:
+#     (lam_inj[i] - cost_b_inj[i]) * (qp[i] * s_base_mva)
+#     - cost_a_inj[i] * (qp[i] * s_base_mva)^2 >= 0;
 
-subject to IR_abs {i in GENERATORS}:
-    (lam_abs[i] - cost_b_abs[i]) * (qn[i] * s_base_mva)
-    - cost_a_abs[i] * (qn[i] * s_base_mva)^2 >= 0;
+# subject to IR_abs {i in GENERATORS}:
+#     (lam_abs[i] - cost_b_abs[i]) * (qn[i] * s_base_mva)
+#     - cost_a_abs[i] * (qn[i] * s_base_mva)^2 >= 0;
 
 # ══════════════════════════════════════════════════════
 # SECTION 15: RELAXED PHYSICAL EXCLUSIVITY
