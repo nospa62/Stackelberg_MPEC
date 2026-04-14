@@ -42,7 +42,7 @@ let {i in GENERATORS} mu_qn_ub[i] := 0.0;
 let {i in GENERATORS} mu_qn_lb[i] := 0.0;
 
 option solver ipopt;
-option ipopt_options 'max_iter=3000 tol=1e-8 acceptable_tol=1e-6 mu_strategy=adaptive nlp_scaling_method=gradient-based bound_push=1e-6 bound_frac=1e-6 print_level=5 file_print_level=5 output_file=ampl/ipopt_log.txt';
+option ipopt_options 'max_iter=3000 tol=1e-8 obj_scaling_factor=1e-3 mu_strategy=adaptive nlp_scaling_method=gradient-based bound_push=1e-6 bound_frac=1e-6 print_level=5 file_print_level=5 output_file=ampl/ipopt_log.txt';
 
 # ══════════════════════════════════════════════════════
 # PART 2 — Smoothing Continuation Loop
@@ -191,7 +191,7 @@ print "Best solve message: " & best_solve_message;
 param TikhPayment;
 let TikhPayment :=
     delta_reg * s_base_mva *
-    sum {i in GENERATORS} (lam_inj[i]^2 + lam_abs[i]^2);
+    sum {i in GENERATORS} lam_inj[i]^2;
 
 param ProcurementCost;
 let ProcurementCost := TotalPayment - TikhPayment;
@@ -304,5 +304,5 @@ printf "2. Max Thermal Violation:      %.2e  [%s]\n", max_t_viol, if max_t_viol 
 printf "3. Max KKT Stat (Injection):   %.2e  [%s]\n", max_kkt_inj, if max_kkt_inj <= 1e-4 then "PASS" else "FAIL";
 printf "4. Max KKT Stat (Absorption):  %.2e  [%s]\n", max_kkt_abs, if max_kkt_abs <= 1e-4 then "PASS" else "FAIL";
 printf "5. Max Complementarity Viol:   %.2e  [%s]\n", max_compl, if max_compl <= 1e-4 then "PASS" else "FAIL";
-printf "6. Max Physical Exclusivity:   %.2e  [%s]\n", max_excl, if max_excl <= 1e-4 then "PASS" else "FAIL";
+printf "6. Max Physical Exclusivity:   %.2e MVAr^2  [%s]\n", max_excl, if max_excl <= 1e-4 then "PASS" else "FAIL";
 printf "======================================================\n\n";
