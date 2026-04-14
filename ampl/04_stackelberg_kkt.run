@@ -8,6 +8,7 @@
 #                if prices are in pu, convert: price_eur_mvar = price_pu * s_base_mva.
 # - Q conversion: qp[i] and qn[i] are in pu. Multiply by s_base_mva for MVAr display.
 # - P_ref is in pu. Multiply by s_base_mva for MW display.
+# - TikhPayment: computed from lam_inj only, matching the objective in Section 9.
 # ==============================================================================
 
 # ══════════════════════════════════════════════════════
@@ -42,7 +43,13 @@ let {i in GENERATORS} mu_qn_ub[i] := 0.0;
 let {i in GENERATORS} mu_qn_lb[i] := 0.0;
 
 option solver ipopt;
-option ipopt_options 'max_iter=3000 tol=1e-8 acceptable_tol=1e-6 mu_strategy=adaptive nlp_scaling_method=gradient-based bound_push=1e-6 bound_frac=1e-6 print_level=5 file_print_level=5 output_file=ampl/ipopt_log.txt';
+# FIX-B: removed acceptable_tol (FIX-C) so only tol=1e-8 governs convergence.
+# FIX-B: added obj_scaling_factor=1e-3 to rebalance objective (~1760 €) against
+#         power flow constraints (O(1) pu). This reduces the Y-bus conditioning
+#         problem caused by B[6,6]=-11849 pu creating Jacobian entries of O(1e4).
+#         nlp_scaling_method=gradient-based is kept so Ipopt also auto-scales constraints.
+#         bound_push/bound_frac kept at 1e-6 to avoid variables sticking to bounds.
+option ipopt_options 'max_iter=3000 tol=1e-8 obj_scaling_factor=1e-3 mu_strategy=adaptive nlp_scaling_method=gradient-based bound_push=1e-6 bound_frac=1e-6 print_level=5 file_print_level=5 output_file=ampl/ipopt_log.txt';
 
 # ══════════════════════════════════════════════════════
 # PART 2 — Smoothing Continuation Loop
@@ -78,7 +85,7 @@ for {start in 1..4} {
     let {b in BUSES} theta[b] := theta_init[b];
     
     if start == 4 then {
-        # Absorption-biased warm start
+        # Absorption-biased warm start: explore absorption-dominant local optima
         let {i in GENERATORS} qp[i] := 0.001;
         let {i in GENERATORS} qn[i] := q_abs_max[i] * 0.3;
         let {i in GENERATORS} lam_inj[i] := price_floor + 0.001;
@@ -102,14 +109,13 @@ for {start in 1..4} {
         printf "START %d, PASS %d: eps_smooth = %g\n", start, pass, eps_smooth;
         printf "======================================================\n";
         
-        # For pass 1: uses initial values from q_init_inj, q_init_abs, V_init, theta_init (set by 'let' in .mod)
-        # For passes 2 and 3: warm starts from previous solution automatically
         solve;
         
-        printf "Pass %d: obj=%g, eps=%g, max_Tikhonov_effect=%g €/MVAr\n",
+        printf "Pass %d: obj=%g, eps=%g, max_Tikhonov_effect=%g EUR\n",
             pass, TotalPayment,
             eps_smooth,
-            delta_reg * (sum {i in GENERATORS} (qp[i]^2 + qn[i]^2))^0.5 * s_base_mva;
+            # Tikhonov effect uses lam_inj only — matches objective Section 9
+            delta_reg * s_base_mva * sum {i in GENERATORS} lam_inj[i]^2;
         
         if solve_result == "infeasible" or solve_result == "failure" then {
             printf "\nWARNING: Solve failed with status '%s'. Continuing to next pass...\n", solve_result;
@@ -177,8 +183,6 @@ if best_obj < 1e29 then {
     let {i in GENERATORS} mu_qp_lb[i] := best_mu_qp_lb[i];
     let {i in GENERATORS} mu_qn_ub[i] := best_mu_qn_ub[i];
     let {i in GENERATORS} mu_qn_lb[i] := best_mu_qn_lb[i];
-    # We also need to update TotalPayment and solve_result for the output
-    # But TotalPayment is a defined variable, so it updates automatically
 }
 
 print "Best solve message: " & best_solve_message;
@@ -188,10 +192,13 @@ print "Best solve message: " & best_solve_message;
 # ══════════════════════════════════════════════════════
 
 # File 1: ampl/solution_summary.txt
+# FIX-A: TikhPayment uses only lam_inj[i]^2, matching the objective in Section 9.
+#         Previously used lam_inj^2 + lam_abs^2, which overstated Tikhonov contribution
+#         and understated ProcurementCost by the lam_abs^2 portion.
 param TikhPayment;
 let TikhPayment :=
     delta_reg * s_base_mva *
-    sum {i in GENERATORS} (lam_inj[i]^2 + lam_abs[i]^2);
+    sum {i in GENERATORS} lam_inj[i]^2;
 
 param ProcurementCost;
 let ProcurementCost := TotalPayment - TikhPayment;
@@ -246,7 +253,6 @@ for {i in GENERATORS} {
 }
 
 # File 2: ampl/solution_raw.txt
-# Write ALL variable values using AMPL 'display' command
 option display_1col 10000;
 option display_width 1000;
 option display_precision 15;
@@ -293,6 +299,9 @@ let max_compl := max(
     max {i in GENERATORS} abs(mu_qn_lb[i] * qn[i])
 );
 
+# FIX-D: exclusivity is in MVAr² (both qp and qn multiplied by s_base_mva).
+# Threshold 1e-4 MVAr² corresponds to sqrt(1e-4) ≈ 0.01 MVAr per variable,
+# which is acceptable (< 0.01% of typical dispatch quantities).
 let max_excl := max {i in GENERATORS} (qp[i] * s_base_mva * qn[i] * s_base_mva);
 
 printf "\n======================================================\n";
@@ -304,5 +313,5 @@ printf "2. Max Thermal Violation:      %.2e  [%s]\n", max_t_viol, if max_t_viol 
 printf "3. Max KKT Stat (Injection):   %.2e  [%s]\n", max_kkt_inj, if max_kkt_inj <= 1e-4 then "PASS" else "FAIL";
 printf "4. Max KKT Stat (Absorption):  %.2e  [%s]\n", max_kkt_abs, if max_kkt_abs <= 1e-4 then "PASS" else "FAIL";
 printf "5. Max Complementarity Viol:   %.2e  [%s]\n", max_compl, if max_compl <= 1e-4 then "PASS" else "FAIL";
-printf "6. Max Physical Exclusivity:   %.2e  [%s]\n", max_excl, if max_excl <= 1e-4 then "PASS" else "FAIL";
+printf "6. Max Physical Exclusivity:   %.2e MVAr^2  [%s]\n", max_excl, if max_excl <= 1e-4 then "PASS" else "FAIL";
 printf "======================================================\n\n";
