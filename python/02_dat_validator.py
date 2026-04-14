@@ -204,6 +204,17 @@ def validate_network_dat(dat_path):
     # 17. Y_bus symmetry
     G = p2d.get('G', {})
     B = p2d.get('B', {})
+    
+    B_values = list(B.values())
+    if B_values:
+        max_B = max(abs(v) for v in B_values)
+        s_base = scalars.get('s_base_mva', 100.0)
+        v.check(max_B <= 1000 * s_base,
+                f"max|B_ij| = {max_B:.1f} pu is reasonable for s_base={s_base} MVA.",
+                f"max|B_ij| = {max_B:.1f} pu is very large for s_base={s_base} MVA. "
+                f"Check transformer data base MVA. Reactive losses will be unrealistically high.",
+                is_warn=True)
+
     asym_G = []
     asym_B = []
     for b in buses:

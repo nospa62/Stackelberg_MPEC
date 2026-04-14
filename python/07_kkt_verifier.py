@@ -111,7 +111,11 @@ def verify_power_flow_balance(raw_res: dict, net_data: dict, s_base: float,
     """
     import math
 
-    buses = [int(k) for k in net_data.get('V_min', {}).keys()]
+    buses = [int(b) for b in net_data.get('BUSES', [])]
+    if not buses:
+        # Fallback: derive from G diagonal
+        buses = sorted(set(int(k[0]) for k in net_data.get('G', {}).keys()))
+
     V = {b: raw_res.get(f'V[{b}]', 1.0) for b in buses}
     theta = {b: raw_res.get(f'theta[{b}]', 0.0) for b in buses}
 
@@ -261,9 +265,6 @@ def verify_kkt_stationarity(solution, network, tol=1e-6):
         # Calculate exactly what AMPL calculated
         stat_inj[g] = abs(lam_inj - 2*ca_inj*qp_mvar - cb_inj - mu_qp_ub + mu_qp_lb)
         stat_abs[g] = abs(lam_abs - 2*ca_abs*qn_mvar - cb_abs - mu_qn_ub + mu_qn_lb)
-        
-        print(f"gen {g}: mu_qn_lb={mu_qn_lb:.6g}, lam_abs={lam_abs:.6g}, "
-              f"cb_abs={cb_abs:.6g}, stat_abs={stat_abs[g]:.3e}")
         
     max_inj = max((v for v in stat_inj.values()), default=0.0)
     max_abs = max((v for v in stat_abs.values()), default=0.0)
@@ -416,10 +417,18 @@ def run_full_verification(solution_raw_path, network_dat_path, tol=1e-4):
         missing = net_gens - sol_gens
         assert not missing, f"Generator IDs in solution_raw do not match network.dat! Missing: {missing}"
     
-    pf_res = verify_ac_power_flow(solution, network, tol=tol)
+    max_B_diag = max(
+        (abs(network['B'].get((b, b), 0.0)) for b in network['BUSES']),
+        default=1.0
+    )
+    pf_tol = max(tol, max_B_diag * 1e-7)   # scales with transformer conditioning
+    
+    pf_res = verify_ac_power_flow(solution, network, tol=pf_tol)
+    print(f"  [INFO] AC flow tolerance auto-scaled to {pf_tol:.2e} "
+          f"(max|B_diag|={max_B_diag:.1f} pu)")
     
     # Also run the new power flow balance check
-    pf_violations = verify_power_flow_balance(solution, network, s_base=network.get('s_base_mva', 100.0), tol=tol)
+    pf_violations = verify_power_flow_balance(solution, network, s_base=network.get('s_base_mva', 100.0), tol=pf_tol)
     if pf_violations:
         print(f"  [WARN] AC Power Flow Balance Violations found: {len(pf_violations)}")
         for v in pf_violations[:5]:

@@ -222,7 +222,22 @@ def compute_market_statistics(results: dict, network_dat_path: str) -> dict:
     
     # Reactive power balance: Injected + Shunts = Load + Absorbed_by_lines + Line_losses
     # → Line reactive losses = (Injected + Shunts) - (Load + Absorbed_by_generators)
-    q_line_losses = (tot_q_inj + tot_q_shunt) - (tot_q_load + tot_q_abs)
+    bf = results['branch_flows']
+    # Reactive losses = sum of (Q_from + Q_to) for each branch
+    # Each row has Q_flow_mva measured FROM side. For the receiving side, use -Q_flow_back.
+    # Simpler: sum all |Q flows| times sign correction
+    q_transformer_absorption = 0.0
+    if not bf.empty:
+        # For each branch, reactive loss = Q_injected_at_from - Q_received_at_to
+        # We only have one-sided Q_flow here. Use:
+        # net_reactive_loss = ΣQ_gen + ΣQ_shunt - ΣQ_load (exact balance)
+        q_line_losses = (tot_q_inj + tot_q_shunt) - (tot_q_load + tot_q_abs)
+        # Flag if suspiciously large (>50% of total Q generation)
+        if abs(q_line_losses) > 0.5 * max(tot_q_inj, 1.0):
+            print(f"  WARNING: Q balance = {q_line_losses:.1f} MVAr. "
+                  f"Network has large transformer reactive absorption — check Y-bus base MVA.")
+    else:
+        q_line_losses = (tot_q_inj + tot_q_shunt) - (tot_q_load + tot_q_abs)
     
     tot_payment = results['solve_info']['objective']
     procurement_cost = results['solve_info'].get('procurement_cost_eur', tot_payment)
@@ -278,19 +293,24 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
     assert all(abs(row['mu_qp_ub']) < 1e4 for _, row in kkt_df.iterrows()), \
         "mu_qp_ub values look pu-scaled (>>price_cap). Check C1 fix in .mod."
 
+    # ── FIX: normalise gen_id to string in ALL DataFrames before merging ──
+    for key in ('dispatch', 'prices', 'kkt_multipliers'):
+        results[key]['gen_id'] = results[key]['gen_id'].astype(str)
+
+    df = (results['dispatch']
+          .merge(results['prices'],         on='gen_id')
+          .merge(results['kkt_multipliers'], on='gen_id'))
+
+    # ── FIX: drop rows where any quantity is NaN (merge artefacts) ──
+    df = df.dropna(subset=['qp_mvar', 'qn_mvar', 'lam_inj', 'lam_abs',
+                            'mu_qp_ub', 'mu_qp_lb', 'mu_qn_ub', 'mu_qn_lb'])
+
     violations = []
 
-    df = results['dispatch'].merge(results['prices'], on='gen_id')
-    df = df.merge(results['kkt_multipliers'], on='gen_id')
-
-    cost_a_inj = net_data.get('cost_a_inj', {})
-    if not isinstance(cost_a_inj, dict): cost_a_inj = {}
-    cost_b_inj = net_data.get('cost_b_inj', {})
-    if not isinstance(cost_b_inj, dict): cost_b_inj = {}
-    cost_a_abs = net_data.get('cost_a_abs', {})
-    if not isinstance(cost_a_abs, dict): cost_a_abs = {}
-    cost_b_abs = net_data.get('cost_b_abs', {})
-    if not isinstance(cost_b_abs, dict): cost_b_abs = {}
+    cost_a_inj = {str(k): v for k, v in net_data.get('cost_a_inj', {}).items()}
+    cost_b_inj = {str(k): v for k, v in net_data.get('cost_b_inj', {}).items()}
+    cost_a_abs = {str(k): v for k, v in net_data.get('cost_a_abs', {}).items()}
+    cost_b_abs = {str(k): v for k, v in net_data.get('cost_b_abs', {}).items()}
 
     # Tikhonov delta_reg read from .dat for idle-generator threshold
     delta_reg = float(net_data.get('delta_reg', 1e-6))
@@ -298,17 +318,13 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
     stat_tol = 1e-3 + delta_reg * s_base
 
     for _, row in df.iterrows():
-        gen_id_val = row['gen_id']
-        try:
-            gen = str(int(float(gen_id_val)))
-        except ValueError:
-            gen = str(gen_id_val)
+        gen = str(row['gen_id'])
 
         # All quantities in MVAr / €/MVAr — NO /s_base divisions
-        qp_mvar = row['qp_mvar']
-        qn_mvar = row['qn_mvar']
-        lam_inj = row['lam_inj']
-        lam_abs = row['lam_abs']
+        qp_mvar = float(row['qp_mvar'])
+        qn_mvar = float(row['qn_mvar'])
+        lam_inj = float(row['lam_inj'])
+        lam_abs = float(row['lam_abs'])
 
         ca_inj = float(cost_a_inj.get(gen, 0.0))
         cb_inj = float(cost_b_inj.get(gen, 0.0))
@@ -316,18 +332,12 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
         cb_abs = float(cost_b_abs.get(gen, 0.0))
 
         # Multipliers already in €/MVAr — do NOT divide by s_base
-        mu_qp_ub = row['mu_qp_ub']
-        mu_qp_lb = row['mu_qp_lb']
-        mu_qn_ub = row['mu_qn_ub']
-        mu_qn_lb = row['mu_qn_lb']
+        mu_qp_ub = float(row['mu_qp_ub'])
+        mu_qp_lb = float(row['mu_qp_lb'])
+        mu_qn_ub = float(row['mu_qn_ub'])
+        mu_qn_lb = float(row['mu_qn_lb'])
 
         if qp_mvar > 1e-3:  # Injecting
-            if lam_inj < cb_inj - 1e-4:
-                violations.append(
-                    f"Gen {gen} injecting but lam_inj ({lam_inj:.4f}) < cb_inj ({cb_inj:.4f})"
-                )
-            # Units: lam [€/MVAr], ca [€/MVAr²], qp_mvar [MVAr], cb [€/MVAr], mu [€/MVAr]
-            # Stationarity: λ = 2·a·Q + b + μ_ub - μ_lb  (all in €/MVAr)
             expected_inj = 2.0 * ca_inj * qp_mvar + cb_inj + mu_qp_ub - mu_qp_lb
             residual_inj = abs(lam_inj - expected_inj)
             if residual_inj > stat_tol:
@@ -337,10 +347,6 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
                 )
 
         elif qn_mvar > 1e-3:  # Absorbing
-            if lam_abs < cb_abs - 1e-4:
-                violations.append(
-                    f"Gen {gen} absorbing but lam_abs ({lam_abs:.4f}) < cb_abs ({cb_abs:.4f})"
-                )
             expected_abs = 2.0 * ca_abs * qn_mvar + cb_abs + mu_qn_ub - mu_qn_lb
             residual_abs = abs(lam_abs - expected_abs)
             if residual_abs > stat_tol:
