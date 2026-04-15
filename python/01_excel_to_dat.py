@@ -207,6 +207,15 @@ def process_excel_to_dat(excel_path, dat_path):
     G = np.real(Y_bus)
     B = np.imag(Y_bus)
 
+    # Check for unrealistically large susceptances
+    for i in range(n_buses):
+        for j in range(n_buses):
+            if i != j:
+                b_ij = B[i, j]
+                if abs(b_ij) > 500 * s_base_mva:
+                    print(f"WARNING: Branch {bus_ids[i]}-{bus_ids[j]} susceptance {b_ij:.1f} pu is very large "
+                          f"for {s_base_mva} MVA base. Check transformer rated MVA vs system base.")
+
     # Check row sums
     # FIX: Removed. In AC literature, row sums equal nodal shunts, not zero.
     # row_sums = np.sum(Y_bus, axis=1)

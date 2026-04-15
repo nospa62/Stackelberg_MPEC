@@ -130,8 +130,10 @@ minimize TotalPayment:
         lam_inj[i] * qp[i] * s_base_mva
       + lam_abs[i] * qn[i] * s_base_mva
     )
-    # Tikhonov on injection prices only — do NOT penalise absorption prices
-    + delta_reg * s_base_mva * sum {i in GENERATORS} lam_inj[i]^2;
+    + delta_reg * s_base_mva * (
+        sum {i in GENERATORS} lam_inj[i]^2
+      + sum {i in GENERATORS} lam_abs[i]^2
+    );
 
 # Economic interpretation:
 # - lam_inj[i]*qp[i]: payment to producer i for reactive injection
@@ -229,6 +231,9 @@ subject to KKT_stationarity_abs {i in GENERATORS}:
     + mu_qn_lb[i]
     = 0;
 
+subject to lam_abs_floor {i in GENERATORS}:
+    lam_abs[i] >= price_floor;
+
 # ══════════════════════════════════════════════════════
 # SECTION 13: KKT COMPLEMENTARITY — FISCHER-BURMEISTER SMOOTHING
 # ══════════════════════════════════════════════════════
@@ -283,10 +288,13 @@ subject to KKT_compl_qn_lb {i in GENERATORS}:
 # phi_eps(qp, qn) = qp + qn - sqrt(qp^2 + qn^2 + eps_smooth^2) = 0
 # At eps->0 this enforces qp*qn=0, i.e. exactly one is nonzero.
 
-subject to physical_exclusivity {i in GENERATORS}:
-    (qp[i] + qn[i]) * s_base_mva
-    - sqrt((qp[i] * s_base_mva)^2 + (qn[i] * s_base_mva)^2
-           + eps_smooth^2) = 0;
+var slack_excl {GENERATORS} >= 0;   # penalty for simultaneous qp,qn > 0
+
+subject to physical_exclusivity_ub {i in GENERATORS}:
+    qp[i] * s_base_mva * qn[i] * s_base_mva <= slack_excl[i];
+
+subject to physical_exclusivity_penalty {i in GENERATORS}:
+    slack_excl[i] <= eps_smooth;   # tightens as eps_smooth → 0
 
 # ══════════════════════════════════════════════════════
 # SECTION 16: AUXILIARY EXPRESSIONS (for output and validation)

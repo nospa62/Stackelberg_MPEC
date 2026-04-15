@@ -223,19 +223,14 @@ def compute_market_statistics(results: dict, network_dat_path: str) -> dict:
     # Reactive power balance: Injected + Shunts = Load + Absorbed_by_lines + Line_losses
     # → Line reactive losses = (Injected + Shunts) - (Load + Absorbed_by_generators)
     bf = results['branch_flows']
-    # Reactive losses = sum of (Q_from + Q_to) for each branch
-    # Each row has Q_flow_mva measured FROM side. For the receiving side, use -Q_flow_back.
-    # Simpler: sum all |Q flows| times sign correction
-    q_transformer_absorption = 0.0
+    q_transformer_reactive = 0.0
     if not bf.empty:
-        # For each branch, reactive loss = Q_injected_at_from - Q_received_at_to
-        # We only have one-sided Q_flow here. Use:
-        # net_reactive_loss = ΣQ_gen + ΣQ_shunt - ΣQ_load (exact balance)
-        q_line_losses = (tot_q_inj + tot_q_shunt) - (tot_q_load + tot_q_abs)
-        # Flag if suspiciously large (>50% of total Q generation)
-        if abs(q_line_losses) > 0.5 * max(tot_q_inj, 1.0):
-            print(f"  WARNING: Q balance = {q_line_losses:.1f} MVAr. "
-                  f"Network has large transformer reactive absorption — check Y-bus base MVA.")
+        q_gen_net_total = tot_q_inj - tot_q_abs   # net Q from generators (MVAr)
+        q_line_losses = q_gen_net_total + tot_q_shunt - tot_q_load
+        # Flag the transformer reactive demand separately
+        q_transformer_reactive = bf[bf.apply(
+            lambda r: abs(r['Q_flow_mva']) > 0.3 * abs(r['P_flow_mw'] + 1e-6), axis=1
+        )]['Q_flow_mva'].abs().sum()
     else:
         q_line_losses = (tot_q_inj + tot_q_shunt) - (tot_q_load + tot_q_abs)
     
@@ -285,6 +280,12 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
     Multipliers in solution_summary.txt are already in €/MVAr.
     cost_a_inj is in €/MVAr² (network.dat convention).
     """
+    # Guard: check required sections exist
+    for section in ('dispatch', 'prices', 'kkt_multipliers'):
+        if section not in results:
+            print(f"[WARN] Section '{section}' missing from results — skipping consistency check")
+            return []
+
     net_data = _parse_network_dat(network_dat_path)
     s_base = results['solve_info']['s_base']
     
@@ -295,11 +296,16 @@ def verify_dual_price_consistency(results: dict, network_dat_path: str = 'ampl/n
 
     # ── FIX: normalise gen_id to string in ALL DataFrames before merging ──
     for key in ('dispatch', 'prices', 'kkt_multipliers'):
+        results[key] = results[key].copy()
         results[key]['gen_id'] = results[key]['gen_id'].astype(str)
 
     df = (results['dispatch']
-          .merge(results['prices'],         on='gen_id')
-          .merge(results['kkt_multipliers'], on='gen_id'))
+          .merge(results['prices'],          on='gen_id', how='inner')
+          .merge(results['kkt_multipliers'], on='gen_id', how='inner'))
+
+    if df.empty:
+        print("[ERROR] Merge produced empty DataFrame — gen_id mismatch between sections")
+        return ["Merge failure: gen_id type mismatch between dispatch/prices/kkt_multipliers"]
 
     # ── FIX: drop rows where any quantity is NaN (merge artefacts) ──
     df = df.dropna(subset=['qp_mvar', 'qn_mvar', 'lam_inj', 'lam_abs',

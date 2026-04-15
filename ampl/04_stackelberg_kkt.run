@@ -42,7 +42,7 @@ let {i in GENERATORS} mu_qn_ub[i] := 0.0;
 let {i in GENERATORS} mu_qn_lb[i] := 0.0;
 
 option solver ipopt;
-option ipopt_options 'max_iter=3000 tol=1e-8 obj_scaling_factor=1e-3 mu_strategy=adaptive nlp_scaling_method=gradient-based bound_push=1e-6 bound_frac=1e-6 print_level=5 file_print_level=5 output_file=ampl/ipopt_log.txt';
+option ipopt_options 'max_iter=3000 tol=1e-8 obj_scaling_factor=-1 mu_strategy=adaptive nlp_scaling_method=gradient-based bound_push=1e-8 bound_frac=1e-8 print_level=5 file_print_level=5';
 
 # ══════════════════════════════════════════════════════
 # PART 2 — Smoothing Continuation Loop
@@ -69,6 +69,11 @@ param best_mu_qn_ub {GENERATORS};
 param best_mu_qn_lb {GENERATORS};
 param best_solve_result symbolic default "infeasible";
 param best_solve_message symbolic default "";
+
+param best_start default -1;
+param best_pass  default -1;
+
+param options_str symbolic;
 
 for {start in 1..4} {
     let start_scale := start;
@@ -104,6 +109,8 @@ for {start in 1..4} {
         
         # For pass 1: uses initial values from q_init_inj, q_init_abs, V_init, theta_init (set by 'let' in .mod)
         # For passes 2 and 3: warm starts from previous solution automatically
+        let options_str := 'max_iter=3000 tol=1e-8 obj_scaling_factor=-1 mu_strategy=adaptive nlp_scaling_method=gradient-based bound_push=1e-8 bound_frac=1e-8 print_level=5 file_print_level=5 output_file=ampl/ipopt_log_s' & start & '_p' & pass & '.txt';
+        option ipopt_options (options_str);
         solve;
         
         printf "Pass %d: obj=%g, eps=%g, max_Tikhonov_effect=%g €/MVAr\n",
@@ -151,6 +158,8 @@ for {start in 1..4} {
     
     if TotalPayment < best_obj and (solve_result == "solved" or solve_result == "uncertain") then {
         let best_obj := TotalPayment;
+        let best_start := start;
+        let best_pass := num_passes;
         let best_solve_result := solve_result;
         let best_solve_message := solve_message;
         let {b in BUSES} best_V[b] := V[b];
@@ -196,7 +205,10 @@ let TikhPayment :=
 param ProcurementCost;
 let ProcurementCost := TotalPayment - TikhPayment;
 
-printf "[SOLVE INFO]\n" > ampl/solution_summary.txt;
+printf "Best solution: start=%d, pass=%d, obj=%.4f\n", 
+    best_start, best_pass, best_obj > ampl/solution_summary.txt;
+
+printf "\n[SOLVE INFO]\n" >> ampl/solution_summary.txt;
 printf "objective,solve_result,eps_smooth_final,s_base_mva,procurement_cost_eur,tikhonov_eur\n" >> ampl/solution_summary.txt;
 printf "%.6f,%s,%.2e,%.1f,%.6f,%.8f\n", TotalPayment, best_solve_result, eps_smooth, s_base_mva, ProcurementCost, TikhPayment >> ampl/solution_summary.txt;
 
